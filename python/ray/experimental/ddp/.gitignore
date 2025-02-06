@@ -1,0 +1,4 @@
+*.log
+*.csv
+*.nsys-rep
+*.prof
