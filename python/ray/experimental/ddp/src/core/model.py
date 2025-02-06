@@ -1,290 +1,302 @@
-import logging
-import random
-from typing import List, Optional
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
 
+import math
+from dataclasses import dataclass
+from typing import Optional, Tuple
+
+import fairscale.nn.model_parallel.initialize as fs_init
 import torch
-import torch.nn as nn
-from torch.nn.utils import parameters_to_vector
-from torch import Tensor
+import torch.nn.functional as F
+from fairscale.nn.model_parallel.layers import (
+    ColumnParallelLinear,
+    RowParallelLinear,
+    VocabParallelEmbedding,
+)
+from torch import nn
 
 
-logger = logging.getLogger()
+@dataclass
+class ModelArgs:
+    dim: int = 4096
+    n_layers: int = 32
+    n_heads: int = 32
+    n_kv_heads: Optional[int] = None
+    vocab_size: int = -1
+    multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
+    ffn_dim_multiplier: Optional[float] = None
+    norm_eps: float = 1e-5
+    rope_theta: float = 500000
 
-def set_seed(seed: int = 42):
-    random.seed(seed)
-    torch.manual_seed(seed)
-    
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+    max_batch_size: int = 32
+    max_seq_len: int = 2048
 
 
-class RMSNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-5):
+class RMSNorm(torch.nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
         self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def _norm(self, x):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x):
-        norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-        return self.weight * x * norm
+        output = self._norm(x.float()).type_as(x)
+        return output * self.weight
 
 
-class RotaryEmbedding(nn.Module):
-    def __init__(self, dim: int, base: int = 10000):
-        super().__init__()
-
-        self.dim = dim
-        self.base = base
-
-        # Compute inverse frequency (used for RoPE)
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq)
-
-    def forward(self, x):
-        """
-        Applies Rotary Positional Embeddings (RoPE).
-        x: (batch_size, seq_len, num_heads, head_dim)
-        """
-
-        batch_size, seq_len, num_heads, head_dim = x.shape
-
-        # Ensure head_dim is divisible by 2
-        assert head_dim % 2 == 0, "head_dim must be divisible by 2 for Rotary Embeddings"
-
-        # Compute position index (shape: seq_len, 1)
-        t = torch.arange(seq_len, device=x.device).unsqueeze(1)
-
-        # Compute angles (shape: seq_len, head_dim/2)
-        angle = t * self.inv_freq.unsqueeze(0)
-
-        # Compute sin and cos (shape: seq_len, head_dim/2)
-        sin, cos = angle.sin(), angle.cos()
-
-        # Expand dimensions to match input shape: (batch_size, seq_len, num_heads, head_dim/2)
-        sin = sin.unsqueeze(0).unsqueeze(2).expand(batch_size, seq_len, num_heads, head_dim // 2)
-        cos = cos.unsqueeze(0).unsqueeze(2).expand(batch_size, seq_len, num_heads, head_dim // 2)
-
-        # Split x into even and odd dimensions
-        x1, x2 = x[..., ::2], x[..., 1::2]
-
-        # Apply rotary transformation
-        x_rotated = torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
-
-        return x_rotated
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(end, device=freqs.device, dtype=torch.float32)
+    freqs = torch.outer(t, freqs)
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
+    return freqs_cis
 
 
-class LlamaAttention(nn.Module):
-    def __init__(self, hidden_size, num_heads):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.head_dim = hidden_size // num_heads  # Ensure head_dim is consistent
-
-        # Rotary Embedding applied per head
-        self.rotary_emb = RotaryEmbedding(self.head_dim)
-
-        # Corrected Projection Layers: All match head_dim × num_heads = hidden_size
-        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)  # (1024 → 1024)
-        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)  # (1024 → 1024)
-        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)  # (1024 → 1024)
-        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)  # (1024 → 1024)
-
-    def forward(self, x):
-        batch_size, seq_len, _ = x.shape
-
-        q = self.q_proj(x)
-        k = self.k_proj(x)
-        v = self.v_proj(x)
-
-        # Reshape for multi-head attention (batch_size, seq_len, num_heads, head_dim)
-        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim)
-
-        # Apply Rotary Embedding to Queries and Keys
-        q = self.rotary_emb(q)
-        k = self.rotary_emb(k)
-
-        # Compute Self-Attention
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / self.head_dim**0.5
-        attn_weights = torch.softmax(attn_scores, dim=-1)
-        attn_output = torch.matmul(attn_weights, v)
-
-        # Merge heads back (batch_size, seq_len, hidden_size)
-        attn_output = attn_output.view(batch_size, seq_len, self.hidden_size)
-        
-        return self.o_proj(attn_output)
+def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
+    ndim = x.ndim
+    assert 0 <= 1 < ndim
+    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
+    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+    return freqs_cis.view(*shape)
 
 
-class LlamaMLP(nn.Module):
-    def __init__(self, hidden_size, intermediate_size):
-        super().__init__()
-        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
-        self.act_fn = nn.SiLU()
-
-    def forward(self, x):
-        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-
-
-class LlamaDecoderLayer(nn.Module):
-    def __init__(self, hidden_size, num_heads, intermediate_size):
-        super().__init__()
-        self.self_attn = LlamaAttention(hidden_size, num_heads)
-        self.mlp = LlamaMLP(hidden_size, intermediate_size)
-        self.input_layernorm = RMSNorm(hidden_size)
-        self.post_attention_layernorm = RMSNorm(hidden_size)
-
-    def forward(self, x):
-        x = self.input_layernorm(x)
-        attn_output = self.self_attn(x)
-        x = x + attn_output
-        x = self.post_attention_layernorm(x)
-        mlp_output = self.mlp(x)
-        return x + mlp_output
+def apply_rotary_emb(
+    xq: torch.Tensor,
+    xk: torch.Tensor,
+    freqs_cis: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
+    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
-class Llama(nn.Module):
-    # def __init__(self, vocab_size=128256, hidden_size=4096, num_layers=32, num_heads=32, intermediate_size=14336):
-    def __init__(self, vocab_size=128256, hidden_size=1024, num_layers=4, num_heads=4, intermediate_size=3584):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, hidden_size)
-        self.layers = nn.ModuleList([LlamaDecoderLayer(hidden_size, num_heads, intermediate_size) for _ in range(num_layers)])
-        self.fc = nn.Linear(hidden_size, vocab_size, bias=False)
-
-    def forward(self, input_ids):
-        x = self.embed(input_ids)
-
-        for layer in self.layers:
-            x = layer(x)
-
-        logits = self.fc(x)
-        return logits
-
-
-class BucketParameter(nn.Module):
-    def __init__(self, layers: List[nn.Module], to_flat: bool = False):
-        super().__init__()
-        if to_flat:
-            assert len(layers) == 1
-        self.layers = torch.nn.ModuleList(layers)
-        self.to_flat = to_flat
-
-        self.x = None
-        self.y = None
-        self.criterion = torch.nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(self.layers.parameters(), lr=0.001)
-
-    def forward(self, x: Tensor) -> Tensor:
-        if self.to_flat:
-            x = torch.flatten(x, 1)
-        for layer in self.layers:
-            x = layer(x)
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """torch.repeat_interleave(x, dim=2, repeats=n_rep)"""
+    bs, slen, n_kv_heads, head_dim = x.shape
+    if n_rep == 1:
         return x
+    return (
+        x[:, :, :, None, :]
+        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
+        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
+    )
 
-    def backward(
-        self,
-        loss: Optional[torch.Tensor] = None,
-        pred: Optional[torch.Tensor] = None,
-        grad: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        if loss is not None:
-            assert pred is None
-            loss.backward()
-        elif pred is not None:
-            assert grad is not None
-            pred.backward(grad)
 
-        # [TODO] Check if `parameters()` is deterministic.
-        grads_cat = parameters_to_vector(
-            [p.grad for p in self.layers.parameters() if p.grad is not None]
+class Attention(nn.Module):
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
+        model_parallel_size = fs_init.get_model_parallel_world_size()
+        self.n_local_heads = args.n_heads // model_parallel_size
+        self.n_local_kv_heads = self.n_kv_heads // model_parallel_size
+        self.n_rep = self.n_local_heads // self.n_local_kv_heads
+        self.head_dim = args.dim // args.n_heads
+
+        self.wq = ColumnParallelLinear(
+            args.dim,
+            args.n_heads * self.head_dim,
+            bias=False,
+            gather_output=False,
+            init_method=lambda x: x,
         )
-        return grads_cat
+        self.wk = ColumnParallelLinear(
+            args.dim,
+            self.n_kv_heads * self.head_dim,
+            bias=False,
+            gather_output=False,
+            init_method=lambda x: x,
+        )
+        self.wv = ColumnParallelLinear(
+            args.dim,
+            self.n_kv_heads * self.head_dim,
+            bias=False,
+            gather_output=False,
+            init_method=lambda x: x,
+        )
+        self.wo = RowParallelLinear(
+            args.n_heads * self.head_dim,
+            args.dim,
+            bias=False,
+            input_is_parallel=True,
+            init_method=lambda x: x,
+        )
 
-    def update(self, grads_cat: torch.Tensor, grads_passed: bool) -> None:
-        if grads_passed:
-            offset = 0
-            # [TODO] Check if `parameters()` is deterministic.
-            for p in self.layers.parameters():
-                if p.grad is None:
-                    continue
-                size = p.data.numel()
-                grad = grads_cat[offset : offset + size].reshape(p.data.shape)
-                p.grad = grad
-                offset += size
-
-        self.optimizer.step()
-        self.optimizer.zero_grad()
-
-
-class LlamaMP(nn.Module):
-    def __init__(self, vocab_size=128256, hidden_size=1024, num_layers=4, num_heads=4, intermediate_size=3584):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, hidden_size)
-        self.layers = nn.ModuleList([LlamaDecoderLayer(hidden_size, num_heads, intermediate_size) for _ in range(num_layers)])
-        self.fc = nn.Linear(hidden_size, vocab_size, bias=False)
-        self.process_bucket_params()
-
-    def process_bucket_params(self):
-        def show_layer_size(layer, indent=0):
-            num_params = sum(p.numel() for p in layer.parameters())
-            size_mib = num_params * 4 / (1024 * 1024)
-            indent_str = "  " * indent
-            logger.info(f"{indent_str}{layer.__class__.__name__}: {size_mib:.2f} MiB")
-            if size_mib < 25:
-                return
-            for _, child in layer.named_children():
-                show_layer_size(child, indent + 1)
-
-        def calculate_layer_size(layer) -> float:
-            num_params = sum(p.numel() for p in layer.parameters())
-            size_mib = num_params * 4 / (1024 * 1024)
-            return size_mib
-        
-        for layer in self.layers:
-            show_layer_size(layer)
-        
-        BUCKET_SIZE = 120
-        self.bucket_params: List[BucketParameter] = []
-        bucket_layers: List[nn.Module] = []
-        bucket_size = 0
-        for layer in self.layers:
-            size = calculate_layer_size(layer)
-            if bucket_size + size <= BUCKET_SIZE:
-                bucket_layers.append(layer)
-                bucket_size += size
-            else:
-                self.bucket_params.append(BucketParameter(bucket_layers))
-                bucket_layers = [layer]
-                bucket_size = size
-        if len(bucket_layers) > 0:
-            self.bucket_params.append(BucketParameter(bucket_layers))
-        self.bucket_params.append(BucketParameter([self.fc]))
-
-        for bparam in self.bucket_params:
-            logger.info(
-                f"Bucket size: {sum(calculate_layer_size(m) for m in bparam.layers):.2f} MiB"
+        self.cache_k = torch.zeros(
+            (
+                args.max_batch_size,
+                args.max_seq_len,
+                self.n_local_kv_heads,
+                self.head_dim,
             )
-            for layer in bparam.layers:
-                logger.info(f"  {layer.__class__.__name__}")
+        ).cuda()
+        self.cache_v = torch.zeros(
+            (
+                args.max_batch_size,
+                args.max_seq_len,
+                self.n_local_kv_heads,
+                self.head_dim,
+            )
+        ).cuda()
 
-    def forward(self, input_ids):
-        x = self.embed(input_ids)
+    def forward(
+        self,
+        x: torch.Tensor,
+        start_pos: int,
+        freqs_cis: torch.Tensor,
+        mask: Optional[torch.Tensor],
+    ):
+        bsz, seqlen, _ = x.shape
+        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
-        for bparam in self.bucket_params:
-            x = bparam(x)
-        return x
+        xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
+        xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
+        xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
+
+        xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+
+        self.cache_k = self.cache_k.to(xq)
+        self.cache_v = self.cache_v.to(xq)
+
+        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
+        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
+
+        keys = self.cache_k[:bsz, : start_pos + seqlen]
+        values = self.cache_v[:bsz, : start_pos + seqlen]
+
+        # repeat k/v heads if n_kv_heads < n_heads
+        keys = repeat_kv(
+            keys, self.n_rep
+        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+        values = repeat_kv(
+            values, self.n_rep
+        )  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+
+        xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
+        keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        values = values.transpose(
+            1, 2
+        )  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+        if mask is not None:
+            scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
+        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+        output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
+        output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
+        return self.wo(output)
 
 
-set_seed(32)
-model = Llama().to("cuda")
-input_ids = torch.full((10, 1000), torch.randint(0, 128256, (1,)).item(), dtype=torch.long).to("cuda")
-output = model(input_ids)
+class FeedForward(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        multiple_of: int,
+        ffn_dim_multiplier: Optional[float],
+    ):
+        super().__init__()
+        hidden_dim = int(2 * hidden_dim / 3)
+        # custom dim factor multiplier
+        if ffn_dim_multiplier is not None:
+            hidden_dim = int(ffn_dim_multiplier * hidden_dim)
+        hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
-# print(model)
-print(f"Output value: {output}")
-# print(f"Output shape: {output.shape}")  # Expected: (1, 10, 128256)
+        self.w1 = ColumnParallelLinear(
+            dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+        )
+        self.w2 = RowParallelLinear(
+            hidden_dim, dim, bias=False, input_is_parallel=True, init_method=lambda x: x
+        )
+        self.w3 = ColumnParallelLinear(
+            dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
+        )
+
+    def forward(self, x):
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+
+
+class TransformerBlock(nn.Module):
+    def __init__(self, layer_id: int, args: ModelArgs):
+        super().__init__()
+        self.n_heads = args.n_heads
+        self.dim = args.dim
+        self.head_dim = args.dim // args.n_heads
+        self.attention = Attention(args)
+        self.feed_forward = FeedForward(
+            dim=args.dim,
+            hidden_dim=4 * args.dim,
+            multiple_of=args.multiple_of,
+            ffn_dim_multiplier=args.ffn_dim_multiplier,
+        )
+        self.layer_id = layer_id
+        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        start_pos: int,
+        freqs_cis: torch.Tensor,
+        mask: Optional[torch.Tensor],
+    ):
+        h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
+        out = h + self.feed_forward(self.ffn_norm(h))
+        return out
+
+
+class Transformer(nn.Module):
+    def __init__(self, params: ModelArgs):
+        super().__init__()
+        self.params = params
+        self.vocab_size = params.vocab_size
+        self.n_layers = params.n_layers
+
+        self.tok_embeddings = VocabParallelEmbedding(
+            params.vocab_size, params.dim, init_method=lambda x: x
+        )
+
+        self.layers = torch.nn.ModuleList()
+        for layer_id in range(params.n_layers):
+            self.layers.append(TransformerBlock(layer_id, params))
+
+        self.norm = RMSNorm(params.dim, eps=params.norm_eps)
+        self.output = ColumnParallelLinear(
+            params.dim, params.vocab_size, bias=False, init_method=lambda x: x
+        )
+
+        self.freqs_cis = precompute_freqs_cis(
+            params.dim // params.n_heads,
+            params.max_seq_len * 2,
+            params.rope_theta,
+        )
+
+    @torch.inference_mode()
+    def forward(self, tokens: torch.Tensor, start_pos: int):
+        _bsz, seqlen = tokens.shape
+        h = self.tok_embeddings(tokens)
+        self.freqs_cis = self.freqs_cis.to(h.device)
+        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+
+        mask = None
+        if seqlen > 1:
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
+
+            mask = torch.triu(mask, diagonal=1)
+
+            # When performing key-value caching, we compute the attention scores
+            # only for the new sequence. Thus, the matrix of scores is of size
+            # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
+            # j > cache_len + i, since row i corresponds to token cache_len + i.
+            mask = torch.hstack(
+                [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
+            ).type_as(h)
+
+        for layer in self.layers:
+            h = layer(h, start_pos, freqs_cis, mask)
+        h = self.norm(h)
+        output = self.output(h).float()
+        return output
