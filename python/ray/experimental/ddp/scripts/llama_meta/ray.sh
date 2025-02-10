@@ -26,18 +26,18 @@ timestamp=$(date '+%Y%m%d_%H%M%S')
 
 export RAY_DEDUP_LOGS=0
 
-output_path=results/barbell/llama/ray_no_allreduce
+output_path=results/barbell/llama_meta/ray
 mkdir -p $output_path
 rm -f $output_path/*.csv
 
-num_models=12
+num_models=4
 num_actors=2
 num_epochs=10
 latency_prefix=${timestamp}_latency
 model_prefix=$output_path/${timestamp}_model
 log_file=$output_path/${timestamp}.log
 
-python -m ray.experimental.ddp.src.main.ray_no_allreduce \
+python -m ray.experimental.ddp.src.main.llama_meta.ray \
 	--num-models $num_models \
 	--num-actors $num_actors \
 	--num-epochs $num_epochs \

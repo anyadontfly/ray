@@ -16,8 +16,8 @@ from fairscale.nn.model_parallel.initialize import (
     model_parallel_is_initialized,
 )
 
-from .model import ModelArgs, Transformer
-from .tokenizer import ChatFormat, Dialog, Message, Tokenizer
+from ..model import ModelArgs, Transformer
+from ..tokenizer import ChatFormat, Dialog, Message, Tokenizer
 
 
 class CompletionPrediction(TypedDict, total=False):

@@ -3,10 +3,11 @@ import time
 from typing import Any, Dict, List
 
 import ray
-from ..common import log_elapses_to_csv
-from ..config import parse_args
-from ..core.actor import LlamaActor
+from ...core.common import log_elapses_to_csv
+from ...core.config import parse_args
+from ...core.llama_meta.actor import LlamaActor
 from ray.dag import InputNode, MultiOutputNode
+from ray.experimental.collective import allreduce
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -52,13 +53,19 @@ def train_cot(
         actors_to_backwards = actors_to_forwards
         outputs = []
 
+        actors_to_backwards = [
+            actor.backward.bind(actors_to_backwards[j], num_models - 1)
+            for j, actor in enumerate(actors)
+        ]
         for i in reversed(range(num_models)):
-            actors_to_backwards = [
-                actor.backward.bind(actors_to_backwards[j], i)
-                for j, actor in enumerate(actors)
-            ]
+            grads_allreduced = allreduce.bind(actors_to_backwards)
+            if i > 0:
+                actors_to_backwards = [
+                    actor.backward.bind(actors_to_backwards[j], i - 1)
+                    for j, actor in enumerate(actors)
+                ]
             actors_to_updates = [
-                actor.update.bind(actors_to_backwards[j], False, i)
+                actor.update.bind(grads_allreduced[j], True, i)
                 for j, actor in enumerate(actors)
             ]
             outputs.extend(actors_to_updates)

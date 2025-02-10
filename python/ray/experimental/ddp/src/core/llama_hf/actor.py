@@ -7,7 +7,7 @@ import torch
 
 import ray
 from ..common import secs_to_micros
-from .generation import LlamaMP
+from ..generation import LlamaMP
 
 @ray.remote
 class LlamaActor:
