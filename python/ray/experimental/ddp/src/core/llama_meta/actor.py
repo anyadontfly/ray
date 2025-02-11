@@ -49,7 +49,6 @@ class LlamaActor:
             0,
             10000,
             (batch_size, 512),
-            requires_grad=True,
         ).to(
             self.device,
         )

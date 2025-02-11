@@ -587,7 +587,7 @@ class TransformerMP(nn.Module):
     
 
 
-model = TransformerMP()
-input_tensor = torch.randint(0, 10000, (1, 512))  # (batch_size, seq_len)
-print(model(input_tensor, 0).shape)
+# model = TransformerMP()
+# input_tensor = torch.randint(0, 10000, (1, 512))  # (batch_size, seq_len)
+# print(model(input_tensor, 0).shape)
 # print(f"{model.bucket_params} in total of {model.bucket_params.__len__()} buckets")
