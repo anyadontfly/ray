@@ -38,7 +38,6 @@ def main(args: Dict[str, Any]) -> None:
         args = model.pre_forward(input_tensor, 0)
         output = model.bucket_params[0].x
         for i, bparams in enumerate(model.bucket_params):
-            print(i)
             pred = bparams.forward(output, *args)
             if i < len(model.bucket_params) - 1:
                 output = pred.detach().requires_grad_(True)
@@ -48,12 +47,11 @@ def main(args: Dict[str, Any]) -> None:
 
         # output = model.forward(input_tensor, 0)
 
-        print(f"Output shape: {output.shape}, output: {output}")
+        # print(f"Output shape: {output.shape}, output: {output}")
 
-        loss = None
-        pred = None
-        grad = None
-        for i in reversed(range(model.bucket_params)):
+        print(list(model.bucket_params[1].layers[0].parameters()))
+
+        for i in reversed(range(len(model.bucket_params))):
             if i == len(model.bucket_params) - 1:
                 loss = model.bucket_params[i].criterion(
                     intermediates[i][0],
@@ -71,23 +69,9 @@ def main(args: Dict[str, Any]) -> None:
                 pred=pred,
                 grad=grad,
             )
+            model.bucket_params[i].update(grads, True)
 
-        # for i in reversed(range(model.bucket_params)):
-        #     if i == len(model.bucket_params) - 1:
-        #         loss_fn = torch.nn.CrossEntropyLoss()
-        #         loss = loss_fn(output, target_tensor)
-        #         loss.backward()
-        #         model.bucket_params[i]
-
-        # # Calculate the loss (example using cross-entropy loss)
-        # loss_fn = torch.nn.CrossEntropyLoss()
-        # loss = loss_fn(output, target_tensor)
-
-        # # Backward pass through the bucket
-        # loss.backward()
-
-        # # Update the parameters in the bucket
-        # bucket.optimizer.step()
+        print(list(model.bucket_params[1].layers[0].parameters()))
 
         print("Bucket training completed!")
 
@@ -116,7 +100,12 @@ def main(args: Dict[str, Any]) -> None:
         # Forward pass
         output = model(input_tensor, 0)  # Assuming start_pos=0
 
-        print(f"Output shape: {output.shape}, output: {output}")
+        # print(f"Output shape: {output.shape}, output: {output}")
+
+        print(list(model.layers[0].parameters()))
+        print()
+        print()
+        print()
 
         # Calculate the loss
         loss_fn = torch.nn.CrossEntropyLoss()
@@ -127,6 +116,8 @@ def main(args: Dict[str, Any]) -> None:
 
         # Update the parameters
         optimizer.step()
+
+        print(list(model.layers[0].parameters()))
 
         print("Normal Transformer training completed!")
 

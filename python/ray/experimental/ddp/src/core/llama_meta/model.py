@@ -372,7 +372,7 @@ class Transformer(nn.Module):
             params.rope_theta,
         )
 
-    @torch.inference_mode()
+    # @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
@@ -536,7 +536,7 @@ class TransformerMP(nn.Module):
             self.output
         ]
 
-        BUCKET_SIZE=1100
+        BUCKET_SIZE=260
         
         self.bucket_params: List[BucketParameter] = []
         bucket_layers: List[nn.Module] = []
@@ -579,7 +579,7 @@ class TransformerMP(nn.Module):
             ).type(torch.float32)
         return start_pos, freqs_cis, mask
 
-    @torch.inference_mode()
+    # @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
         # h = self.tok_embeddings(tokens)
