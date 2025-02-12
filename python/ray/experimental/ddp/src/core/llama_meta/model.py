@@ -17,6 +17,8 @@ from torch import nn
 from torch import Tensor
 from torch.nn.utils import parameters_to_vector
 
+import argparse
+
 
 @dataclass
 class ModelArgs:
@@ -33,12 +35,54 @@ class ModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 2048
 
+LLAMA_1B = ModelArgs(
+    dim=2048,
+    n_layers=16,
+    n_heads=32,
+    n_kv_heads=8,
+    vocab_size=128256,
+    multiple_of=256,
+    ffn_dim_multiplier=1.5,
+    norm_eps=1e-5,
+    rope_theta=500000,
+    max_batch_size=32,
+    max_seq_len=2048
+)
+
+LLAMA_3B = ModelArgs(
+    dim=3072,
+    n_layers=28,
+    n_heads=24,
+    n_kv_heads=8,
+    vocab_size=128256,
+    multiple_of=256,
+    ffn_dim_multiplier=1.0,
+    norm_eps=1e-5,
+    rope_theta=500000,
+    max_batch_size=32,
+    max_seq_len=2048
+)
+
+LLAMA_8B = ModelArgs(
+    dim=4096,
+    n_layers=32,
+    n_heads=32,
+    n_kv_heads=8,
+    vocab_size=128256,
+    multiple_of=1024,
+    ffn_dim_multiplier=1.3,
+    norm_eps=1e-5,
+    rope_theta=500000,
+    max_batch_size=32,
+    max_seq_len=2048
+)
+
 TRANSFORMER_SMALL = ModelArgs(
     dim=512,
     n_layers=4,
     n_heads=4,
     n_kv_heads=2,
-    vocab_size=10000,
+    vocab_size=128256,
     multiple_of=64,
     ffn_dim_multiplier=None,
     norm_eps=1e-5,
@@ -370,12 +414,15 @@ class BucketParameter(nn.Module):
         self.y = None
         self.criterion = torch.nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(self.layers.parameters(), lr=0.001)
-
-    def forward(self, x: Tensor) -> Tensor:
+            
+    def forward(self, x: Tensor, *args) -> Tensor:
         if self.to_flat:
             x = torch.flatten(x, 1)
         for layer in self.layers:
-            x = layer(x)
+            if isinstance(layer, AttentionRes):
+                x = layer(x, *args)
+            else:
+                x = layer(x)
         return x
 
     def backward(
@@ -513,18 +560,17 @@ class TransformerMP(nn.Module):
         
         layers_seq = []
         for layer in self.layers:
-            layers_seq.append(nn.Sequential(
-                AttentionRes(layer.attention, layer.attention_norm),
-                FeedForwardRes(layer.feed_forward, layer.ffn_norm)
-            ))
+            layers_seq.extend([AttentionRes(layer.attention, layer.attention_norm),
+                FeedForwardRes(layer.feed_forward, layer.ffn_norm)])
 
         _layers_to_bucket = [
             self.tok_embeddings,
             *layers_seq,
+            self.norm,
             self.output
         ]
 
-        BUCKET_SIZE=25
+        BUCKET_SIZE=1500
         
         self.bucket_params: List[BucketParameter] = []
         bucket_layers: List[nn.Module] = []
@@ -539,31 +585,18 @@ class TransformerMP(nn.Module):
                 bucket_layers.append(layer)
                 bucket_size += layer_size
             else:
-                if isinstance(layer, nn.Sequential):
-                    for child in layer:
-                        child_size = calculate_layer_size(child)
-                        if bucket_size + child_size <= BUCKET_SIZE:
-                            bucket_layers.append(child)
-                            bucket_size += child_size
-                        else:
-                            self.bucket_params.append(BucketParameter(bucket_layers))
-                            bucket_layers = [child]
-                            bucket_size = child_size
-                else:
-                    self.bucket_params.append(BucketParameter(bucket_layers))
-                    bucket_layers = [layer]
-                    bucket_size = layer_size
+                self.bucket_params.append(BucketParameter(bucket_layers))
+                bucket_layers = [layer]
+                bucket_size = layer_size
         if len(bucket_layers) > 0:
             self.bucket_params.append(BucketParameter(bucket_layers))
-                    
-
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
-        h = self.tok_embeddings(tokens)
-        self.freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+        # h = self.tok_embeddings(tokens)
+        # self.freqs_cis = self.freqs_cis.to(h.device)
+        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen].to(tokens.device)
 
         mask = None
         if seqlen > 1:
@@ -577,17 +610,10 @@ class TransformerMP(nn.Module):
             # j > cache_len + i, since row i corresponds to token cache_len + i.
             mask = torch.hstack(
                 [torch.zeros((seqlen, start_pos), device=tokens.device), mask]
-            ).type_as(h)
+            ).type(torch.float32)
 
-        for layer in self.layers:
-            h = layer(h, start_pos, freqs_cis, mask)
-        h = self.norm(h)
-        output = self.output(h).float()
+        h = tokens
+        for bparam in self.bucket_params:
+            h = bparam(h, start_pos, freqs_cis, mask)
+        output = h.float()
         return output
-    
-
-
-# model = TransformerMP()
-# input_tensor = torch.randint(0, 10000, (1, 512))  # (batch_size, seq_len)
-# print(model(input_tensor, 0).shape)
-# print(f"{model.bucket_params} in total of {model.bucket_params.__len__()} buckets")

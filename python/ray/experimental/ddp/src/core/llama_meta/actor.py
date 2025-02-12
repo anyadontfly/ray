@@ -52,10 +52,11 @@ class LlamaActor:
         ).to(
             self.device,
         )
-        self.models[-1].y = torch.randint(
-            0,
-            1,
-            (batch_size, 512, 10000),
+        self.models[-1].y = torch.randn(
+            batch_size,
+            512,
+            128256,
+            requires_grad=True,
         ).to(
             self.device,
         )
