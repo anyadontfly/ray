@@ -49,7 +49,7 @@ def main(args: Dict[str, Any]) -> None:
 
         # print(f"Output shape: {output.shape}, output: {output}")
 
-        print(list(model.bucket_params[1].layers[0].parameters()))
+        # print(list(model.bucket_params[1].layers[0].parameters()))
 
         for i in reversed(range(len(model.bucket_params))):
             if i == len(model.bucket_params) - 1:
@@ -79,13 +79,13 @@ def main(args: Dict[str, Any]) -> None:
         print("Normal Transformer training started!")
 
         if args.model_size == 1:
-            model = TransformerMP(LLAMA_1B).to("cuda")
+            model = Transformer(LLAMA_1B).to("cuda")
         elif args.model_size == 3:
-            model = TransformerMP(LLAMA_3B).to("cuda")
+            model = Transformer(LLAMA_3B).to("cuda")
         elif args.model_size == 8:
-            model = TransformerMP(LLAMA_8B).to("cuda")
+            model = Transformer(LLAMA_8B).to("cuda")
         else:
-            model = TransformerMP(TRANSFORMER_SMALL).to("cuda")
+            model = Transformer(TRANSFORMER_SMALL).to("cuda")
 
         # Assuming you have a Transformer model and input data
         input_tensor = torch.randint(0, 128256, (1, 2048)).to("cuda")
@@ -102,10 +102,7 @@ def main(args: Dict[str, Any]) -> None:
 
         # print(f"Output shape: {output.shape}, output: {output}")
 
-        print(list(model.layers[0].parameters()))
-        print()
-        print()
-        print()
+        # print(list(model.layers[0].parameters()))
 
         # Calculate the loss
         loss_fn = torch.nn.CrossEntropyLoss()
