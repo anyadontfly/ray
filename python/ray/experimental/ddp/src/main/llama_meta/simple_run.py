@@ -4,7 +4,8 @@ from ...core.llama_meta.model import (
     TransformerMP,
     LLAMA_1B,
     LLAMA_3B,
-    LLAMA_8B
+    LLAMA_8B,
+    TRANSFORMER_SMALL,
 )
 
 from typing import Any, Dict
@@ -20,29 +21,63 @@ def main(args: Dict[str, Any]) -> None:
             model = TransformerMP(LLAMA_1B).to("cuda")
         elif args.model_size == 3:
             model = TransformerMP(LLAMA_3B).to("cuda")
-        else:
+        elif args.model_size == 8:
             model = TransformerMP(LLAMA_8B).to("cuda")
+        else:
+            model = TransformerMP(TRANSFORMER_SMALL).to("cuda")
 
         # Assuming you have a TransformerMP model and input data
         input_tensor = torch.randint(0, 128256, (1, 2048)).to("cuda")
         target_tensor = torch.randn(1, 2048, 128256, requires_grad=True).to("cuda")
 
-        output = input_tensor
+        intermediates = []
 
-        # # Iterate through the buckets
-        # for bucket in model.bucket_params:
-        #     # Zero the gradients for the bucket's optimizer
-        #     bucket.optimizer.zero_grad()
+        model.bucket_params[0].x = input_tensor
+        model.bucket_params[-1].y = target_tensor
 
-        #     # Forward pass through the bucket
-        #     output = bucket(output)
+        args = model.pre_forward(input_tensor, 0)
+        output = model.bucket_params[0].x
+        for i, bparams in enumerate(model.bucket_params):
+            print(i)
+            pred = bparams.forward(output, *args)
+            if i < len(model.bucket_params) - 1:
+                output = pred.detach().requires_grad_(True)
+            else:
+                output = pred
+            intermediates.append((pred, output))
 
-        output = model(input_tensor, 0)
+        # output = model.forward(input_tensor, 0)
 
         print(f"Output shape: {output.shape}, output: {output}")
 
-        # for bucket in reversed(model.bucket_params):
+        loss = None
+        pred = None
+        grad = None
+        for i in reversed(range(model.bucket_params)):
+            if i == len(model.bucket_params) - 1:
+                loss = model.bucket_params[i].criterion(
+                    intermediates[i][0],
+                    model.bucket_params[i].y,
+                )
+                pred = None
+                grad = None
+            else:
+                loss = None
+                pred, input = intermediates[i]
+                grad = input.grad
+                intermediates[i] = (None, None)
+            grads = model.bucket_params[i].backward(
+                loss=loss,
+                pred=pred,
+                grad=grad,
+            )
 
+        # for i in reversed(range(model.bucket_params)):
+        #     if i == len(model.bucket_params) - 1:
+        #         loss_fn = torch.nn.CrossEntropyLoss()
+        #         loss = loss_fn(output, target_tensor)
+        #         loss.backward()
+        #         model.bucket_params[i]
 
         # # Calculate the loss (example using cross-entropy loss)
         # loss_fn = torch.nn.CrossEntropyLoss()
@@ -60,11 +95,13 @@ def main(args: Dict[str, Any]) -> None:
         print("Normal Transformer training started!")
 
         if args.model_size == 1:
-            model = Transformer(LLAMA_1B).to("cuda")
+            model = TransformerMP(LLAMA_1B).to("cuda")
         elif args.model_size == 3:
-            model = Transformer(LLAMA_3B).to("cuda")
+            model = TransformerMP(LLAMA_3B).to("cuda")
+        elif args.model_size == 8:
+            model = TransformerMP(LLAMA_8B).to("cuda")
         else:
-            model = Transformer(LLAMA_8B).to("cuda")
+            model = TransformerMP(TRANSFORMER_SMALL).to("cuda")
 
         # Assuming you have a Transformer model and input data
         input_tensor = torch.randint(0, 128256, (1, 2048)).to("cuda")
@@ -108,7 +145,7 @@ if __name__ == "__main__":
         "--model_size",
         type=int,
         default=1,
-        choices=[1, 3, 8],
+        choices=[1, 3, 8, 0],
     )
     args = parser.parse_args()
     main(args)

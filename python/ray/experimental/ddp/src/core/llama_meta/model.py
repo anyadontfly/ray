@@ -17,8 +17,6 @@ from torch import nn
 from torch import Tensor
 from torch.nn.utils import parameters_to_vector
 
-import argparse
-
 
 @dataclass
 class ModelArgs:
@@ -87,8 +85,8 @@ TRANSFORMER_SMALL = ModelArgs(
     ffn_dim_multiplier=None,
     norm_eps=1e-5,
     rope_theta=500000,
-    max_batch_size=8,
-    max_seq_len=512
+    max_batch_size=32,
+    max_seq_len=2048
 )
 
 
@@ -486,38 +484,6 @@ class FeedForwardRes(nn.Module):
         return x + self.feed_forward(self.ffn_norm(x))
 
 
-# class TransformerBlockSeq(nn.Module):
-#     def __init__(self, layer_id: int, args: ModelArgs):
-#         super().__init__()
-#         self.n_heads = args.n_heads
-#         self.dim = args.dim
-#         self.head_dim = args.dim // args.n_heads
-#         self.attention = Attention(args)
-#         self.feed_forward = FeedForward(
-#             dim=args.dim,
-#             hidden_dim=4 * args.dim,
-#             multiple_of=args.multiple_of,
-#             ffn_dim_multiplier=args.ffn_dim_multiplier,
-#         )
-#         self.layer_id = layer_id
-#         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
-#         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
-
-#         self.attention_block_res = AttentionRes(self.attention, self.attention_norm)
-#         self.feed_forward_block_res = FeedForwardRes(self.feed_forward, self.ffn_norm)
-
-#     def forward(
-#         self,
-#         x: torch.Tensor,
-#         start_pos: int,
-#         freqs_cis: torch.Tensor,
-#         mask: Optional[torch.Tensor],
-#     ):
-#         h = self.attention_block_res(x, start_pos, freqs_cis, mask)
-#         out = self.feed_forward_block_res(h)
-#         return out
-
-    
 class TransformerMP(nn.Module):
     def __init__(self, params: ModelArgs=TRANSFORMER_SMALL):
         super().__init__()
@@ -570,13 +536,13 @@ class TransformerMP(nn.Module):
             self.output
         ]
 
-        BUCKET_SIZE=1500
+        BUCKET_SIZE=1100
         
         self.bucket_params: List[BucketParameter] = []
         bucket_layers: List[nn.Module] = []
         bucket_size = 0
         
-        for i, layer in enumerate(_layers_to_bucket):
+        for layer in _layers_to_bucket:
             layer_size = calculate_layer_size(layer)
             if layer_size > BUCKET_SIZE:
                 raise ValueError(f"Layer size {layer_size} is too large to fit in one bucket {BUCKET_SIZE}.")
@@ -590,6 +556,28 @@ class TransformerMP(nn.Module):
                 bucket_size = layer_size
         if len(bucket_layers) > 0:
             self.bucket_params.append(BucketParameter(bucket_layers))
+        
+        # for bparam in self.bucket_params:
+        #     print(f"bucket {bparam}\nsize {sum(calculate_layer_size(layer) for layer in bparam.layers)}\n")
+
+    def pre_forward(self, x: torch.Tensor, start_pos: int):
+        _bsz, seqlen = x.shape
+        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen].to(x.device)
+
+        mask = None
+        if seqlen > 1:
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=x.device)
+
+            mask = torch.triu(mask, diagonal=1)
+
+            # When performing key-value caching, we compute the attention scores
+            # only for the new sequence. Thus, the matrix of scores is of size
+            # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
+            # j > cache_len + i, since row i corresponds to token cache_len + i.
+            mask = torch.hstack(
+                [torch.zeros((seqlen, start_pos), device=x.device), mask]
+            ).type(torch.float32)
+        return start_pos, freqs_cis, mask
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
