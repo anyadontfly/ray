@@ -1,0 +1,47 @@
+1B:
+Embedding(128256, 2048) size 1002.0
+Attention(
+  (wq): Linear(in_features=2048, out_features=2048, bias=False)
+  (wk): Linear(in_features=2048, out_features=512, bias=False)
+  (wv): Linear(in_features=2048, out_features=512, bias=False)
+  (wo): Linear(in_features=2048, out_features=2048, bias=False)
+) size 40
+FeedForward(
+  (w1): Linear(in_features=2048, out_features=8192, bias=False)
+  (w2): Linear(in_features=8192, out_features=2048, bias=False)
+  (w3): Linear(in_features=2048, out_features=8192, bias=False)
+) size 192
+RMSNorm() size 0.0078125
+Linear(in_features=2048, out_features=128256, bias=False) size 1002.0
+
+3B:
+Embedding(128256, 3072) size 1503.0
+Attention(
+  (wq): Linear(in_features=3072, out_features=3072, bias=False)
+  (wk): Linear(in_features=3072, out_features=1024, bias=False)
+  (wv): Linear(in_features=3072, out_features=1024, bias=False)
+  (wo): Linear(in_features=3072, out_features=3072, bias=False)
+) size 96
+FeedForward(
+  (w1): Linear(in_features=3072, out_features=8192, bias=False)
+  (w2): Linear(in_features=8192, out_features=3072, bias=False)
+  (w3): Linear(in_features=3072, out_features=8192, bias=False)
+) size 288
+RMSNorm() size 0.01171875
+Linear(in_features=3072, out_features=128256, bias=False) size 1503.0
+
+8B:
+Embedding(128256, 4096) size 2004.0
+Attention(
+  (wq): Linear(in_features=4096, out_features=4096, bias=False)
+  (wk): Linear(in_features=4096, out_features=1024, bias=False)
+  (wv): Linear(in_features=4096, out_features=1024, bias=False)
+  (wo): Linear(in_features=4096, out_features=4096, bias=False)
+) size 160
+FeedForward(
+  (w1): Linear(in_features=4096, out_features=14336, bias=False)
+  (w2): Linear(in_features=14336, out_features=4096, bias=False)
+  (w3): Linear(in_features=4096, out_features=14336, bias=False)
+) size 672
+RMSNorm() size 0.015625
+Linear(in_features=4096, out_features=128256, bias=False) size 2004.0

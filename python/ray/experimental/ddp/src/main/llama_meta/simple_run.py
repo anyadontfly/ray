@@ -71,7 +71,7 @@ def main(args: Dict[str, Any]) -> None:
             )
             model.bucket_params[i].update(grads, True)
 
-        print(list(model.bucket_params[1].layers[0].parameters()))
+        # print(list(model.bucket_params[1].layers[0].parameters()))
 
         print("Bucket training completed!")
 
@@ -114,7 +114,7 @@ def main(args: Dict[str, Any]) -> None:
         # Update the parameters
         optimizer.step()
 
-        print(list(model.layers[0].parameters()))
+        # print(list(model.layers[0].parameters()))
 
         print("Normal Transformer training completed!")
 
