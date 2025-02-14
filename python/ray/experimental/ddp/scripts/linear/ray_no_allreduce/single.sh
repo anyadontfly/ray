@@ -26,23 +26,28 @@ timestamp=$(date '+%Y%m%d_%H%M%S')
 
 export RAY_DEDUP_LOGS=0
 
-output_path=results/barbell/llama_meta/ray
+output_path=results/barbell/linear/ray_no_allreduce
 mkdir -p $output_path
 rm -f $output_path/*.csv
 
-num_models=4
+layer_size=1024
+num_layers=8
+num_models=1
 num_actors=2
 num_epochs=10
-latency_prefix=${timestamp}_latency
+latency_prefix=ls${layer_size}_nl${num_layers}
 model_prefix=$output_path/${timestamp}_model
 log_file=$output_path/${timestamp}.log
 
-python -m ray.experimental.ddp.src.main.llama_meta.ray \
+python -m ray.experimental.ddp.src.main.linear.ray_no_allreduce \
+	--layer-size $layer_size \
+	--num-layers $num_layers \
 	--num-models $num_models \
 	--num-actors $num_actors \
 	--num-epochs $num_epochs \
 	--output-path $output_path \
 	--latency-prefix $latency_prefix \
+	--save-model \
 	--model-prefix $model_prefix \
 	--check-tracing \
 	>$log_file 2>&1
@@ -80,8 +85,8 @@ compare_files() {
 	fi
 }
 
-# file1="${output_path}/${timestamp}_model_0.log"
-# file2="${output_path}/${timestamp}_model_1.log"
-# compare_files "$file1" "$file2"
+file1="${output_path}/${timestamp}_model_0.log"
+file2="${output_path}/${timestamp}_model_1.log"
+compare_files "$file1" "$file2"
 
 echo -e "${GREEN}AC${NC}"

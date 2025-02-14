@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 import ray
 from ...core.common import log_elapses_to_csv
 from ...core.config import parse_args
-from ...core.llama_meta.actor import LlamaActor
+from ...core.linear.actor import LinearActor
 from ray.dag import InputNode, MultiOutputNode
 from ray.experimental.collective import allreduce
 
@@ -17,29 +17,32 @@ logging.basicConfig(
 logger.info("Welcome to Downton Abbey!")
 
 
-def init_actors(args: Dict[str, Any]) -> List[LlamaActor]:
+def init_actors(args: Dict[str, Any]) -> List[LinearActor]:
+    layer_size = args["layer_size"]
+    num_layers = args["num_layers"]
     num_models = args["num_models"]
     num_actors = args["num_actors"]
     device = "cuda:0"
     check_tracing = args["check_tracing"]
 
-    actor_cls = LlamaActor.options(num_gpus=1)
+    actor_cls = LinearActor.options(num_gpus=1)
     actors = [
         actor_cls.remote(
-            rank=i,
+            layer_size=layer_size,
+            num_layers=num_layers,
             num_models=num_models,
             num_actors=num_actors,
             device=device,
             check_tracing=check_tracing,
         )
-        for i in range(num_actors)
+        for _ in range(num_actors)
     ]
 
     return actors
 
 
 def train_cot(
-    actors: List[LlamaActor],
+    actors: List[LinearActor],
     num_models: int,
     num_epochs: int,
     output_path: str,
@@ -73,18 +76,23 @@ def train_cot(
         dag = MultiOutputNode(outputs)
 
     compiled_dag = dag.experimental_compile()
-
-    BATCH_SIZE = 32
+    for actor in actors:
+        ray.get(actor.init_weights.remote())
 
     total_elapses: List[int] = []
     for epoch in range(num_epochs):
         for actor in actors:
-            ray.get(actor.init_training.remote(BATCH_SIZE))
+            ray.get(actor.init_training.remote())
             ray.get(actor.init_tracing.remote())
 
         start = time.perf_counter()
         compiled_dag.execute(None)
         end = time.perf_counter()
+
+        if save_model:
+            weights = ray.get(actors[0].fetch_weights.remote())
+            for idx, weight in enumerate(weights):
+                logger.info(f"layer: {idx}, weight: {weight}")
 
         if epoch > 0:
             logger.warning(f"epoch: {epoch}, elapse: {round((end - start) * 1e6)} us")
@@ -129,8 +137,6 @@ def train_cot(
             with open(model_file, "w") as f:
                 for weight in weights:
                     f.write(f"{weight}\n")
-
-    time.sleep(1)
 
 
 def main(args: Dict[str, Any]) -> None:

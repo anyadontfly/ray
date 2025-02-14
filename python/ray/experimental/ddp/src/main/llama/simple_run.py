@@ -1,6 +1,6 @@
 import logging
 import argparse
-from ...core.llama_meta.model import (
+from ...core.llama.model import (
     Transformer,
     TransformerMP,
     LLAMA_1B,

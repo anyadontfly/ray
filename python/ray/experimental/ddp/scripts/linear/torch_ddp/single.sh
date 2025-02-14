@@ -26,22 +26,32 @@ timestamp=$(date '+%Y%m%d_%H%M%S')
 
 export RAY_DEDUP_LOGS=0
 
-output_path=results/barbell/llama_meta/ray
+output_path=results/barbell/linear/torch_ddp
 mkdir -p $output_path
-rm -f $output_path/*.csv
+rm -f ${output_path}/*.csv
 
-model_type=mp
-model_size=0
-log_file=$output_path/${timestamp}.log
+layer_size=1024
+num_layers=8
+num_actors=2
+num_epochs=10
+latency_prefix=ls${layer_size}_nl${num_layers}
+model_prefix=${output_path}/${timestamp}_model
+log_file=${output_path}/${timestamp}.log
 
-python -m ray.experimental.ddp.src.main.llama_meta.simple_run \
-	--model-type $model_type \
-	--model-size $model_size \
+python -m ray.experimental.ddp.src.main.linear.torch_ddp \
+	--layer-size $layer_size \
+	--num-layers $num_layers \
+	--num-actors $num_actors \
+	--num-epochs $num_epochs \
+	--output-path $output_path \
+	--latency-prefix $latency_prefix \
+	--save-model \
+	--model-prefix $model_prefix \
 	>$log_file 2>&1
 status=$?
 
 if $debug; then
-	code $output_path/${timestamp}.log
+	code ${output_path}/${timestamp}.log
 fi
 
 if [ $status -ne 0 ]; then
@@ -72,8 +82,8 @@ compare_files() {
 	fi
 }
 
-# file1="${output_path}/${timestamp}_model_0.log"
-# file2="${output_path}/${timestamp}_model_1.log"
-# compare_files "$file1" "$file2"
+file1="${output_path}/${timestamp}_model_0.log"
+file2="${output_path}/${timestamp}_model_1.log"
+compare_files "$file1" "$file2"
 
 echo -e "${GREEN}AC${NC}"
