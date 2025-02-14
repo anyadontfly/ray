@@ -17,6 +17,8 @@ from torch import nn
 from torch import Tensor
 from torch.nn.utils import parameters_to_vector
 
+import logging
+
 
 @dataclass
 class ModelArgs:
@@ -88,6 +90,9 @@ TRANSFORMER_SMALL = ModelArgs(
     max_batch_size=32,
     max_seq_len=2048
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class RMSNorm(torch.nn.Module):
@@ -518,7 +523,19 @@ class TransformerMP(nn.Module):
 
         self.process_bucket_params()
 
-    def process_bucket_params(self, bucket_size=25):
+    def process_bucket_params(self):
+        BUCKET_SIZE=260
+
+        def show_layer_size(layer, indent=0):
+            num_params = sum(p.numel() for p in layer.parameters())
+            size_mib = num_params * 4 / (1024 * 1024)
+            indent_str = "  " * indent
+            logger.info(f"{indent_str}{layer.__class__.__name__}: {size_mib:.2f} MiB")
+            if size_mib < BUCKET_SIZE:
+                return
+            for _, child in layer.named_children():
+                show_layer_size(child, indent + 1)
+
         def calculate_layer_size(layer) -> float:
             num_params = sum(p.numel() for p in layer.parameters())
             size_mib = num_params * 4 / (1024 * 1024)
@@ -536,7 +553,8 @@ class TransformerMP(nn.Module):
             self.output
         ]
 
-        BUCKET_SIZE=260
+        for layer in _layers_to_bucket:
+            show_layer_size(layer)
         
         self.bucket_params: List[BucketParameter] = []
         bucket_layers: List[nn.Module] = []
@@ -545,7 +563,7 @@ class TransformerMP(nn.Module):
         for layer in _layers_to_bucket:
             layer_size = calculate_layer_size(layer)
             if layer_size > BUCKET_SIZE:
-                raise ValueError(f"Layer size {layer_size} is too large to fit in one bucket {BUCKET_SIZE}.")
+                raise ValueError(f"Layer size {layer_size} MiB is too large to fit in a {BUCKET_SIZE} MiB bucket.")
             
             if bucket_size + layer_size <= BUCKET_SIZE:
                 bucket_layers.append(layer)
@@ -557,8 +575,12 @@ class TransformerMP(nn.Module):
         if len(bucket_layers) > 0:
             self.bucket_params.append(BucketParameter(bucket_layers))
         
-        # for bparam in self.bucket_params:
-        #     print(f"bucket {bparam}\nsize {sum(calculate_layer_size(layer) for layer in bparam.layers)}\n")
+        for bparam in self.bucket_params:
+            logger.info(
+                f"Bucket size: {sum(calculate_layer_size(m) for m in bparam.layers):.2f} MiB"
+            )
+            for layer in bparam.layers:
+                logger.info(f"  {layer.__class__.__name__}")
 
     def pre_forward(self, x: torch.Tensor, start_pos: int):
         _bsz, seqlen = x.shape

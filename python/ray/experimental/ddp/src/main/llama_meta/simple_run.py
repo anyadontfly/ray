@@ -1,3 +1,4 @@
+import logging
 import argparse
 from ...core.llama_meta.model import (
     Transformer,
@@ -8,25 +9,28 @@ from ...core.llama_meta.model import (
     TRANSFORMER_SMALL,
 )
 
-from typing import Any, Dict
-
 import torch
 
 
-def main(args: Dict[str, Any]) -> None:
-    if args.model_type == "mp":
-        print("Bucket training started!")
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.WARNING,
+    format="[%(levelname)s %(filename)s:%(lineno)d %(funcName)s] %(message)s",
+)
 
-        if args.model_size == 1:
+def main(model_type, model_size) -> None:
+    if model_type == "mp":
+        logger.warning("Bucket training started!")
+
+        if model_size == 1:
             model = TransformerMP(LLAMA_1B).to("cuda")
-        elif args.model_size == 3:
+        elif model_size == 3:
             model = TransformerMP(LLAMA_3B).to("cuda")
-        elif args.model_size == 8:
+        elif model_size == 8:
             model = TransformerMP(LLAMA_8B).to("cuda")
         else:
             model = TransformerMP(TRANSFORMER_SMALL).to("cuda")
 
-        # Assuming you have a TransformerMP model and input data
         input_tensor = torch.randint(0, 128256, (1, 2048)).to("cuda")
         target_tensor = torch.randn(1, 2048, 128256, requires_grad=True).to("cuda")
 
@@ -45,11 +49,7 @@ def main(args: Dict[str, Any]) -> None:
                 output = pred
             intermediates.append((pred, output))
 
-        # output = model.forward(input_tensor, 0)
-
-        # print(f"Output shape: {output.shape}, output: {output}")
-
-        # print(list(model.bucket_params[1].layers[0].parameters()))
+        logger.warning(f"Output shape: {output.shape}, output: {output}")
 
         for i in reversed(range(len(model.bucket_params))):
             if i == len(model.bucket_params) - 1:
@@ -71,18 +71,16 @@ def main(args: Dict[str, Any]) -> None:
             )
             model.bucket_params[i].update(grads, True)
 
-        # print(list(model.bucket_params[1].layers[0].parameters()))
-
-        print("Bucket training completed!")
+        logger.warning("Bucket training completed!")
 
     else:
-        print("Normal Transformer training started!")
+        logger.warning("Normal Transformer training started!")
 
-        if args.model_size == 1:
+        if model_size == 1:
             model = Transformer(LLAMA_1B).to("cuda")
-        elif args.model_size == 3:
+        elif model_size == 3:
             model = Transformer(LLAMA_3B).to("cuda")
-        elif args.model_size == 8:
+        elif model_size == 8:
             model = Transformer(LLAMA_8B).to("cuda")
         else:
             model = Transformer(TRANSFORMER_SMALL).to("cuda")
@@ -100,9 +98,7 @@ def main(args: Dict[str, Any]) -> None:
         # Forward pass
         output = model(input_tensor, 0)  # Assuming start_pos=0
 
-        # print(f"Output shape: {output.shape}, output: {output}")
-
-        # print(list(model.layers[0].parameters()))
+        logger.warning(f"Output shape: {output.shape}, output: {output}")
 
         # Calculate the loss
         loss_fn = torch.nn.CrossEntropyLoss()
@@ -114,9 +110,7 @@ def main(args: Dict[str, Any]) -> None:
         # Update the parameters
         optimizer.step()
 
-        # print(list(model.layers[0].parameters()))
-
-        print("Normal Transformer training completed!")
+        logger.warning("Normal Transformer training completed!")
 
 
 if __name__ == "__main__":
@@ -124,16 +118,17 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model_type",
+        "--model-type",
         type=str,
         default="mp",
         choices=["mp", "normal"],
     )
     parser.add_argument(
-        "--model_size",
+        "--model-size",
         type=int,
         default=1,
         choices=[1, 3, 8, 0],
     )
-    args = parser.parse_args()
-    main(args)
+
+    args = vars(parser.parse_args())
+    main(args["model_type"], args["model_size"])
