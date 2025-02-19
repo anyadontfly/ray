@@ -77,18 +77,18 @@ LLAMA_8B = ModelArgs(
     max_seq_len=2048
 )
 
-TRANSFORMER_SMALL = ModelArgs(
+SMALL = ModelArgs(
     dim=512,
     n_layers=4,
     n_heads=4,
     n_kv_heads=2,
-    vocab_size=128256,
+    vocab_size=100,
     multiple_of=64,
     ffn_dim_multiplier=None,
     norm_eps=1e-5,
     rope_theta=500000,
     max_batch_size=32,
-    max_seq_len=2048
+    max_seq_len=128,
 )
 
 
@@ -245,14 +245,17 @@ class Attention(nn.Module):
 
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        self.cache_k = self.cache_k.to(xq)
-        self.cache_v = self.cache_v.to(xq)
+        # self.cache_k = self.cache_k.to(xq)
+        # self.cache_v = self.cache_v.to(xq)
 
-        self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
-        self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
+        # self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
+        # self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
 
-        keys = self.cache_k[:bsz, : start_pos + seqlen]
-        values = self.cache_v[:bsz, : start_pos + seqlen]
+        # keys = self.cache_k[:bsz, : start_pos + seqlen]
+        # values = self.cache_v[:bsz, : start_pos + seqlen]
+
+        keys = xk
+        values = xv
 
         # repeat k/v heads if n_kv_heads < n_heads
         keys = repeat_kv(
@@ -490,7 +493,7 @@ class FeedForwardRes(nn.Module):
 
 
 class TransformerMP(nn.Module):
-    def __init__(self, params: ModelArgs=TRANSFORMER_SMALL):
+    def __init__(self, params: ModelArgs=SMALL):
         super().__init__()
         self.params = params
         self.vocab_size = params.vocab_size
@@ -524,13 +527,13 @@ class TransformerMP(nn.Module):
         self.process_bucket_params()
 
     def process_bucket_params(self):
-        BUCKET_SIZE=260
+        BUCKET_SIZE=15
 
         def show_layer_size(layer, indent=0):
             num_params = sum(p.numel() for p in layer.parameters())
             size_mib = num_params * 4 / (1024 * 1024)
             indent_str = "  " * indent
-            logger.info(f"{indent_str}{layer.__class__.__name__}: {size_mib:.2f} MiB")
+            logger.debug(f"{indent_str}{layer.__class__.__name__}: {size_mib:.2f} MiB")
             if size_mib < BUCKET_SIZE:
                 return
             for _, child in layer.named_children():
@@ -555,6 +558,7 @@ class TransformerMP(nn.Module):
 
         for layer in _layers_to_bucket:
             show_layer_size(layer)
+        logger.debug("\n")
         
         self.bucket_params: List[BucketParameter] = []
         bucket_layers: List[nn.Module] = []
@@ -576,11 +580,11 @@ class TransformerMP(nn.Module):
             self.bucket_params.append(BucketParameter(bucket_layers))
         
         for bparam in self.bucket_params:
-            logger.info(
+            logger.debug(
                 f"Bucket size: {sum(calculate_layer_size(m) for m in bparam.layers):.2f} MiB"
             )
             for layer in bparam.layers:
-                logger.info(f"  {layer.__class__.__name__}")
+                logger.debug(f"  {layer.__class__.__name__}")
 
     def pre_forward(self, x: torch.Tensor, start_pos: int):
         _bsz, seqlen = x.shape

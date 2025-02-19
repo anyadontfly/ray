@@ -26,17 +26,13 @@ timestamp=$(date '+%Y%m%d_%H%M%S')
 
 export RAY_DEDUP_LOGS=0
 
-output_path=results/barbell/llama/ray
+output_path=results/barbell/llama/torch
 mkdir -p $output_path
 rm -f $output_path/*.csv
 
-model_type=mp
-model_size=0
 log_file=$output_path/${timestamp}.log
 
-python -m ray.experimental.ddp.src.main.llama.simple_run \
-	--model-type $model_type \
-	--model-size $model_size \
+python -m ray.experimental.ddp.src.main.llama.torch \
 	>$log_file 2>&1
 status=$?
 
