@@ -7,7 +7,9 @@ import torch
 
 import ray
 from ..common import secs_to_micros
-from .model import TransformerMP
+from .model import TransformerMP, SMALL
+
+logger = logging.getLogger(__name__)
 
 
 @ray.remote
@@ -30,8 +32,8 @@ class LlamaActor:
         self.num_actors = num_actors
         self.device = device
         self.check_tracing = check_tracing
+        self.model_args = SMALL
 
-        logger = logging.getLogger(__name__)
         for model in self.models:
             size_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
             logger.warning(f"Model size: {size_bytes / 1024 / 1024:.2f} MiB")
@@ -47,19 +49,15 @@ class LlamaActor:
     def init_training(self, batch_size: int) -> None:
         self.models[0].x = torch.randint(
             0,
-            10000,
-            (batch_size, 512),
-        ).to(
-            self.device,
-        )
+            self.model_args.vocab_size,
+            (batch_size, self.model_args.max_seq_len)
+        ).to(self.device)
         self.models[-1].y = torch.randn(
             batch_size,
-            512,
-            128256,
-            requires_grad=True,
-        ).to(
-            self.device,
-        )
+            self.model_args.max_seq_len,
+            self.model_args.vocab_size
+        ).to(self.device)
+        self.attention_args = self.llama.pre_forward(self.models[0].x, 0)
 
     def update_time(self, key: str) -> None:
         timestamp = time.perf_counter()
@@ -80,7 +78,7 @@ class LlamaActor:
         }
 
     def finish_tracing(self) -> None:
-        logger = logging.getLogger(__name__)
+        # logger = logging.getLogger(__name__)
         logger.warning(f"Actor {self.rank} finished iteration {self.it}")
 
         self.intermediates = []
@@ -144,7 +142,7 @@ class LlamaActor:
         self.intermediates = []
         input = self.models[0].x
         for i, model in enumerate(self.models):
-            pred = model.forward(input)
+            pred = model.forward(input, *self.attention_args)
             if i < len(self.models) - 1:
                 input = pred.detach().requires_grad_(True)
             else:

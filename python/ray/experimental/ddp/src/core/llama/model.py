@@ -533,7 +533,7 @@ class TransformerMP(nn.Module):
             num_params = sum(p.numel() for p in layer.parameters())
             size_mib = num_params * 4 / (1024 * 1024)
             indent_str = "  " * indent
-            logger.debug(f"{indent_str}{layer.__class__.__name__}: {size_mib:.2f} MiB")
+            logger.warning(f"{indent_str}{layer.__class__.__name__}: {size_mib:.2f} MiB")
             if size_mib < BUCKET_SIZE:
                 return
             for _, child in layer.named_children():
@@ -558,7 +558,7 @@ class TransformerMP(nn.Module):
 
         for layer in _layers_to_bucket:
             show_layer_size(layer)
-        logger.debug("\n")
+        logger.warning("\n")
         
         self.bucket_params: List[BucketParameter] = []
         bucket_layers: List[nn.Module] = []
@@ -580,11 +580,11 @@ class TransformerMP(nn.Module):
             self.bucket_params.append(BucketParameter(bucket_layers))
         
         for bparam in self.bucket_params:
-            logger.debug(
+            logger.warning(
                 f"Bucket size: {sum(calculate_layer_size(m) for m in bparam.layers):.2f} MiB"
             )
             for layer in bparam.layers:
-                logger.debug(f"  {layer.__class__.__name__}")
+                logger.warning(f"  {layer.__class__.__name__}")
 
     def pre_forward(self, x: torch.Tensor, start_pos: int):
         _bsz, seqlen = x.shape
@@ -603,7 +603,7 @@ class TransformerMP(nn.Module):
             mask = torch.hstack(
                 [torch.zeros((seqlen, start_pos), device=x.device), mask]
             ).type(torch.float32)
-        return start_pos, freqs_cis, mask
+        return (start_pos, freqs_cis, mask)
 
     # @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):

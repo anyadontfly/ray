@@ -14,7 +14,6 @@ logging.basicConfig(
     level=logging.WARNING,
     format="[%(levelname)s %(filename)s:%(lineno)d %(funcName)s] %(message)s",
 )
-logger.info("Welcome to Downton Abbey!")
 
 
 def init_actors(args: Dict[str, Any]) -> List[LlamaActor]:
@@ -39,7 +38,7 @@ def init_actors(args: Dict[str, Any]) -> List[LlamaActor]:
 
 
 def train_cot(
-    actors: List[LlamaActor],
+    actors,
     num_models: int,
     num_epochs: int,
     output_path: str,
@@ -86,9 +85,9 @@ def train_cot(
         compiled_dag.execute(None)
         end = time.perf_counter()
 
-        if epoch > 0:
-            logger.warning(f"epoch: {epoch}, elapse: {round((end - start) * 1e6)} us")
-            total_elapses.append(round((end - start) * 1e6))
+        # if epoch > 0:
+        logger.warning(f"epoch: {epoch}, elapse: {round((end - start) * 1e6)} us")
+        total_elapses.append(round((end - start) * 1e6))
 
         for actor in actors:
             ray.get(actor.finish_tracing.remote())
