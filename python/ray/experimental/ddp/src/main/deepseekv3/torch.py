@@ -6,7 +6,7 @@ import torch.optim as optim
 
 from ...core.deepseekv3.model import (
     Transformer,
-    ModelArgs,
+    SMALL,
 )
 
 logger = logging.getLogger(__name__)
@@ -16,22 +16,25 @@ logging.basicConfig(
 )
 
 def main():
+    # torch.set_default_dtype(torch.bfloat16)
+    # torch.set_default_device("cuda")
+    # torch.manual_seed(42)
+    # args = SMALL
+    # x = torch.randint(0, args.vocab_size, (2, 128))
+    # model = Transformer(args)
+    # output = model(x)
+    # print(output, output.size(), output.dtype)
+
     torch.set_default_dtype(torch.bfloat16)
-    model_args = ModelArgs(
-        dim=512, n_layers=4, n_heads=4, vocab_size=100, max_seq_len=128
-    )
-    batch_size = 8
-
-    model = Transformer(model_args)
-    
-    # Generate random input tensor (batch_size=2, seq_len=128)
-    input_tensor = torch.randint(0, model_args.vocab_size, (batch_size, model_args.max_seq_len))
-
-    # Forward pass
-    output = model(input_tensor, start_pos=0)
-
-    # Print output shape
-    print("Output shape:", output.shape)
+    # torch.set_default_device("cuda")
+    torch.manual_seed(42)
+    args = SMALL
+    batch_size = 2
+    seq_len = 100
+    x = torch.randint(0, args.vocab_size, (batch_size, seq_len)).to("cuda")
+    model = Transformer(args).to("cuda:0")
+    output = model(x)
+    print(output, output.size(), output.dtype)
 
     # criterion = nn.CrossEntropyLoss()
     # optimizer = optim.SGD(model.parameters(), lr=0.001)
