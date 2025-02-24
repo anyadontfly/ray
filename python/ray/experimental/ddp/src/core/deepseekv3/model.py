@@ -157,7 +157,7 @@ class ParallelEmbedding(nn.Module):
         if world_size > 1:
             y[mask] = 0
             dist.all_reduce(y)
-        return y.to(torch.bfloat16)
+        return y
 
 
 def linear(x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -183,7 +183,6 @@ def linear(x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] =
         - For other cases, the function applies quantization to `x` and uses `fp8_gemm` for computation.
     """
     if weight.element_size() > 1:
-        print(f"***weight dtype: {weight.dtype}, tokens dtype: {x.dtype}***")
         return F.linear(x, weight, bias)
     elif gemm_impl == "bf16":
         weight = weight_dequant(weight, weight.scale)
@@ -762,13 +761,7 @@ class Block(nn.Module):
         Returns:
             torch.Tensor: Output tensor after block computation.
         """
-        h = x
-        h = self.attn_norm(h)
-        print(f"***dtype after norm: {h.dtype}***")
-        h = self.attn(h, start_pos, freqs_cis, mask)
-        print(f"***dtype after atten: {h.dtype}***")
-        x = x + h
-        # x = x + self.attn(self.attn_norm(x), start_pos, freqs_cis, mask)
+        x = x + self.attn(self.attn_norm(x), start_pos, freqs_cis, mask)
         x = x + self.ffn(self.ffn_norm(x))
         return x
 
@@ -820,7 +813,6 @@ class Transformer(nn.Module):
         """
         seqlen = tokens.size(1)
         h = self.embed(tokens)
-        h = h.to(torch.bfloat16)
         freqs_cis = self.freqs_cis[start_pos:start_pos+seqlen]
         mask = None
         if seqlen > 1:
