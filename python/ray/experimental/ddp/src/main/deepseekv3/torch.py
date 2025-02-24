@@ -16,13 +16,16 @@ logging.basicConfig(
 )
 
 def main():
+    torch.set_default_dtype(torch.bfloat16)
     model_args = ModelArgs(
         dim=512, n_layers=4, n_heads=4, vocab_size=100, max_seq_len=128
     )
-    model = Transformer(model_args)
+    batch_size = 8
 
+    model = Transformer(model_args)
+    
     # Generate random input tensor (batch_size=2, seq_len=128)
-    input_tensor = torch.randint(0, model_args.vocab_size, (2, model_args.max_seq_len))
+    input_tensor = torch.randint(0, model_args.vocab_size, (batch_size, model_args.max_seq_len))
 
     # Forward pass
     output = model(input_tensor, start_pos=0)
