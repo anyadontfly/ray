@@ -1,13 +1,18 @@
 import math
 from dataclasses import dataclass
-from typing import Tuple, Optional, Literal
+from typing import Tuple, Optional, Literal, List
+import logging
 
 import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
+from torch import Tensor
+from torch.nn.utils import parameters_to_vector
 
 from .kernel import act_quant, weight_dequant, fp8_gemm
+
+logger = logging.getLogger(__name__)
 
 
 world_size = 1
@@ -806,7 +811,7 @@ class Transformer(nn.Module):
         self.head = ColumnParallelLinear(args.dim, args.vocab_size, dtype=torch.get_default_dtype())
         self.register_buffer("freqs_cis", precompute_freqs_cis(args), persistent=False)
 
-    @torch.inference_mode()
+    # @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int = 0):
         """
         Forward pass for the Transformer model.
@@ -833,6 +838,231 @@ class Transformer(nn.Module):
             dist.all_gather(all_logits, logits)
             logits = torch.cat(all_logits, dim=-1)
         return logits
+    
+
+class BucketParameter(nn.Module):
+    def __init__(self, layers: List[nn.Module], to_flat: bool = False):
+        super().__init__()
+        if to_flat:
+            assert len(layers) == 1
+        self.layers = torch.nn.ModuleList(layers)
+        self.to_flat = to_flat
+
+        self.x = None
+        self.y = None
+        self.criterion = torch.nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.SGD(self.layers.parameters(), lr=0.001)
+            
+    def forward(self, x: Tensor, *args) -> Tensor:
+        if self.to_flat:
+            x = torch.flatten(x, 1)
+        for layer in self.layers:
+            if isinstance(layer, AttentionRes):
+                x = layer(x, *args)
+            else:
+                x = layer(x)
+        return x
+
+    def backward(
+        self,
+        loss: Optional[torch.Tensor] = None,
+        pred: Optional[torch.Tensor] = None,
+        grad: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if loss is not None:
+            assert pred is None
+            loss.backward()
+        elif pred is not None:
+            assert grad is not None
+            pred.backward(grad)
+
+        # [TODO] Check if `parameters()` is deterministic.
+        grads_cat = parameters_to_vector(
+            [p.grad for p in self.layers.parameters() if p.grad is not None]
+        )
+        return grads_cat
+
+    def update(self, grads_cat: torch.Tensor, grads_passed: bool) -> None:
+        if grads_passed:
+            offset = 0
+            # [TODO] Check if `parameters()` is deterministic.
+            for p in self.layers.parameters():
+                if p.grad is None:
+                    continue
+                size = p.data.numel()
+                grad = grads_cat[offset : offset + size].reshape(p.data.shape)
+                p.grad = grad
+                offset += size
+
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+
+
+class AttentionRes(nn.Module):
+    def __init__(self, attention, attention_norm):
+        super().__init__()
+        self.attention = attention
+        self.attention_norm = attention_norm
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        start_pos: int,
+        freqs_cis: torch.Tensor,
+        mask: Optional[torch.Tensor],
+    ):
+        return x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
+
+
+class FeedForwardRes(nn.Module):
+    def __init__(self, feed_forward, ffn_norm):
+        super().__init__()
+        self.feed_forward = feed_forward
+        self.ffn_norm = ffn_norm
+
+    def forward(self, x):
+        return x + self.feed_forward(self.ffn_norm(x))
+
+
+class TransformerMP(nn.Module):
+    """
+    Transformer model with positional embeddings, multiple layers, and output projection.
+
+    Attributes:
+        max_seq_len (int): Maximum sequence length for the transformer.
+        embed (nn.Module): Embedding layer for input tokens.
+        layers (torch.nn.ModuleList): List of transformer blocks.
+        norm (nn.Module): Layer normalization applied after all blocks.
+        head (nn.Module): Output projection layer mapping to vocabulary size.
+        freqs_cis (torch.Tensor): Precomputed complex exponential values for rotary embeddings.
+    """
+    def __init__(self, args: ModelArgs):
+        """
+        Initializes the Transformer model.
+
+        Args:
+            args (ModelArgs): Model arguments containing transformer parameters.
+        """
+        global world_size, rank
+        world_size = dist.get_world_size() if dist.is_initialized() else 1
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        Linear.dtype = torch.float8_e4m3fn if args.dtype == "fp8" else torch.bfloat16
+        super().__init__()
+        self.max_seq_len = args.max_seq_len
+        self.embed = ParallelEmbedding(args.vocab_size, args.dim)
+        self.layers = torch.nn.ModuleList()
+        for layer_id in range(args.n_layers):
+            self.layers.append(Block(layer_id, args))
+        self.norm = RMSNorm(args.dim)
+        self.head = ColumnParallelLinear(args.dim, args.vocab_size, dtype=torch.get_default_dtype())
+        self.register_buffer("freqs_cis", precompute_freqs_cis(args), persistent=False)
+
+    # @torch.inference_mode()
+    def forward(self, tokens: torch.Tensor, start_pos: int = 0):
+        """
+        Forward pass for the Transformer model.
+
+        Args:
+            tokens (torch.Tensor): Input tensor of token IDs with shape (batch_size, seq_len).
+            start_pos (int, optional): Starting position in the sequence for rotary embeddings. Defaults to 0.
+
+        Returns:
+            torch.Tensor: Logits tensor of shape (batch_size, vocab_size).
+        """
+        seqlen = tokens.size(1)
+        h = self.embed(tokens)
+        freqs_cis = self.freqs_cis[start_pos:start_pos+seqlen]
+        mask = None
+        if seqlen > 1:
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device).triu_(1)
+        for layer in self.layers:
+            h = layer(h, start_pos, freqs_cis, mask)
+        h = self.norm(h)[:, -1]
+        logits = self.head(h)
+        if world_size > 1:
+            all_logits = [torch.empty_like(logits) for _ in range(world_size)]
+            dist.all_gather(all_logits, logits)
+            logits = torch.cat(all_logits, dim=-1)
+        return logits
+    
+    def process_bucket_params(self):
+        BUCKET_SIZE=15
+
+        def show_layer_size(layer, indent=0):
+            num_params = sum(p.numel() for p in layer.parameters())
+            size_mib = num_params * 4 / (1024 * 1024)
+            indent_str = "  " * indent
+            logger.warning(f"{indent_str}{layer.__class__.__name__}: {size_mib:.2f} MiB")
+            if size_mib < BUCKET_SIZE:
+                return
+            for _, child in layer.named_children():
+                show_layer_size(child, indent + 1)
+
+        def calculate_layer_size(layer) -> float:
+            num_params = sum(p.numel() for p in layer.parameters())
+            size_mib = num_params * 4 / (1024 * 1024)
+            return size_mib
+        
+        layers_seq = []
+        for layer in self.layers:
+            layers_seq.extend([AttentionRes(layer.attention, layer.attention_norm),
+                FeedForwardRes(layer.feed_forward, layer.ffn_norm)])
+
+        _layers_to_bucket = [
+            self.tok_embeddings,
+            *layers_seq,
+            self.norm,
+            self.output
+        ]
+
+        for layer in _layers_to_bucket:
+            show_layer_size(layer)
+        logger.warning("\n")
+        
+        self.bucket_params: List[BucketParameter] = []
+        bucket_layers: List[nn.Module] = []
+        bucket_size = 0
+        
+        for layer in _layers_to_bucket:
+            layer_size = calculate_layer_size(layer)
+            if layer_size > BUCKET_SIZE:
+                raise ValueError(f"Layer size {layer_size} MiB is too large to fit in a {BUCKET_SIZE} MiB bucket.")
+            
+            if bucket_size + layer_size <= BUCKET_SIZE:
+                bucket_layers.append(layer)
+                bucket_size += layer_size
+            else:
+                self.bucket_params.append(BucketParameter(bucket_layers))
+                bucket_layers = [layer]
+                bucket_size = layer_size
+        if len(bucket_layers) > 0:
+            self.bucket_params.append(BucketParameter(bucket_layers))
+        
+        for bparam in self.bucket_params:
+            logger.warning(
+                f"Bucket size: {sum(calculate_layer_size(m) for m in bparam.layers):.2f} MiB"
+            )
+            for layer in bparam.layers:
+                logger.warning(f"  {layer.__class__.__name__}")
+
+    def pre_forward(self, x: torch.Tensor, start_pos: int):
+        _bsz, seqlen = x.shape
+        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen].to(x.device)
+
+        mask = None
+        if seqlen > 1:
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=x.device)
+
+            mask = torch.triu(mask, diagonal=1)
+
+            # When performing key-value caching, we compute the attention scores
+            # only for the new sequence. Thus, the matrix of scores is of size
+            # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
+            # j > cache_len + i, since row i corresponds to token cache_len + i.
+            mask = torch.hstack(
+                [torch.zeros((seqlen, start_pos), device=x.device), mask]
+            ).type(torch.float32)
+        return (start_pos, freqs_cis, mask)
 
 
 if __name__ == "__main__":
