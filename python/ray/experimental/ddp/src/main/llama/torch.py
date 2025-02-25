@@ -31,22 +31,23 @@ def main():
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.001)
     logger.debug(f"Model structure: {model}, criterion: {criterion}, optimizer: {optimizer}.")
+    outputs = model.forward(random_input, 0)
 
-    num_epochs = 6
-    for epoch in range(num_epochs):
-        outputs = model.forward(random_input, 0)
+    # num_epochs = 6
+    # for epoch in range(num_epochs):
+    #     outputs = model.forward(random_input, 0)
 
-        loss = criterion(outputs, random_target)
-        loss.backward()
+    #     loss = criterion(outputs, random_target)
+    #     loss.backward()
 
-        logger.debug(f"Gradient of first attention layer: {model.layers[0].attention.wq.weight.grad}, shape: {model.layers[0].attention.wq.weight.shape}")
+    #     logger.debug(f"Gradient of first attention layer: {model.layers[0].attention.wq.weight.grad}, shape: {model.layers[0].attention.wq.weight.shape}")
 
-        optimizer.step()
-        optimizer.zero_grad()
+    #     optimizer.step()
+    #     optimizer.zero_grad()
 
-        logger.debug(f"Params of first attention layer after step: {model.layers[0].attention.wq.weight}")
+    #     logger.debug(f"Params of first attention layer after step: {model.layers[0].attention.wq.weight}")
 
-        logger.info(f"Epoch {epoch}, loss: {loss.item()}")
+    #     logger.info(f"Epoch {epoch}, loss: {loss.item()}")
 
 
 if __name__ == "__main__":

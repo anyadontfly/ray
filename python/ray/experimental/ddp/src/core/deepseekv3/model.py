@@ -500,7 +500,6 @@ class MLA(nn.Module):
         else:
             q = self.wq_b(self.q_norm(self.wq_a(x)))
         q = q.view(bsz, seqlen, self.n_local_heads, self.qk_head_dim)
-        # q_nope: none-positional component, q_pe: positional component
         q_nope, q_pe = torch.split(q, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
         q_pe = apply_rotary_emb(q_pe, freqs_cis)
         kv = self.wkv_a(x)
@@ -512,12 +511,9 @@ class MLA(nn.Module):
             kv = kv.view(bsz, seqlen, self.n_local_heads, self.qk_nope_head_dim + self.v_head_dim)
             k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
             k = torch.cat([k_nope, k_pe.expand(-1, -1, self.n_local_heads, -1)], dim=-1)
-            # diabling KV Caching
             self.k_cache[:bsz, start_pos:end_pos] = k
             self.v_cache[:bsz, start_pos:end_pos] = v
-            print(self.k_cache.shape, self.k_cache[:bsz, :end_pos].shape, k.shape)
             scores = torch.einsum("bshd,bthd->bsht", q, self.k_cache[:bsz, :end_pos]) * self.softmax_scale
-            # scores = torch.einsum("bshd,bthd->bsht", q, self.k_cache[:bsz, :end_pos]) * self.softmax_scale
         else:
             wkv_b = self.wkv_b.weight if self.wkv_b.scale is None else weight_dequant(self.wkv_b.weight, self.wkv_b.scale, block_size) 
             wkv_b = wkv_b.view(self.n_local_heads, -1, self.kv_lora_rank)
@@ -530,9 +526,7 @@ class MLA(nn.Module):
             scores += mask.unsqueeze(1)
         scores = scores.softmax(dim=-1, dtype=torch.float32).type_as(x)
         if attn_impl == "naive":
-            # disabling KV Caching
             x = torch.einsum("bsht,bthd->bshd", scores, self.v_cache[:bsz, :end_pos])
-            # x = torch.einsum("bsht,bthd->bshd", scores, v[:end_pos])
         else:
             x = torch.einsum("bsht,btc->bshc", scores, self.kv_cache[:bsz, :end_pos])
             x = torch.einsum("bshc,hdc->bshd", x, wkv_b[:, -self.v_head_dim:])
@@ -811,7 +805,7 @@ class Transformer(nn.Module):
         self.head = ColumnParallelLinear(args.dim, args.vocab_size, dtype=torch.get_default_dtype())
         self.register_buffer("freqs_cis", precompute_freqs_cis(args), persistent=False)
 
-    # @torch.inference_mode()
+    @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int = 0):
         """
         Forward pass for the Transformer model.
@@ -831,14 +825,16 @@ class Transformer(nn.Module):
             mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device).triu_(1)
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
-        h = self.norm(h)[:, -1]
+        # originaly only keep the last token of output
+        # h = self.norm(h)[:, -1]
+        h = self.norm(h)
         logits = self.head(h)
         if world_size > 1:
             all_logits = [torch.empty_like(logits) for _ in range(world_size)]
             dist.all_gather(all_logits, logits)
             logits = torch.cat(all_logits, dim=-1)
         return logits
-    
+
 
 class BucketParameter(nn.Module):
     def __init__(self, layers: List[nn.Module], to_flat: bool = False):
@@ -956,6 +952,7 @@ class TransformerMP(nn.Module):
         self.norm = RMSNorm(args.dim)
         self.head = ColumnParallelLinear(args.dim, args.vocab_size, dtype=torch.get_default_dtype())
         self.register_buffer("freqs_cis", precompute_freqs_cis(args), persistent=False)
+        self.process_bucket_params()
 
     # @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int = 0):
@@ -986,7 +983,7 @@ class TransformerMP(nn.Module):
         return logits
     
     def process_bucket_params(self):
-        BUCKET_SIZE=15
+        BUCKET_SIZE=35
 
         def show_layer_size(layer, indent=0):
             num_params = sum(p.numel() for p in layer.parameters())
@@ -1005,14 +1002,14 @@ class TransformerMP(nn.Module):
         
         layers_seq = []
         for layer in self.layers:
-            layers_seq.extend([AttentionRes(layer.attention, layer.attention_norm),
-                FeedForwardRes(layer.feed_forward, layer.ffn_norm)])
+            layers_seq.extend([AttentionRes(layer.attn, layer.attn_norm),
+                FeedForwardRes(layer.ffn, layer.ffn_norm)])
 
         _layers_to_bucket = [
-            self.tok_embeddings,
+            self.embed,
             *layers_seq,
             self.norm,
-            self.output
+            self.head
         ]
 
         for layer in _layers_to_bucket:
@@ -1046,22 +1043,11 @@ class TransformerMP(nn.Module):
                 logger.warning(f"  {layer.__class__.__name__}")
 
     def pre_forward(self, x: torch.Tensor, start_pos: int):
-        _bsz, seqlen = x.shape
-        freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen].to(x.device)
-
+        seqlen = x.size(1)
+        freqs_cis = self.freqs_cis[start_pos:start_pos+seqlen]
         mask = None
         if seqlen > 1:
-            mask = torch.full((seqlen, seqlen), float("-inf"), device=x.device)
-
-            mask = torch.triu(mask, diagonal=1)
-
-            # When performing key-value caching, we compute the attention scores
-            # only for the new sequence. Thus, the matrix of scores is of size
-            # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
-            # j > cache_len + i, since row i corresponds to token cache_len + i.
-            mask = torch.hstack(
-                [torch.zeros((seqlen, start_pos), device=x.device), mask]
-            ).type(torch.float32)
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=x.device).triu_(1)
         return (start_pos, freqs_cis, mask)
 
 
@@ -1069,7 +1055,7 @@ if __name__ == "__main__":
     torch.set_default_dtype(torch.bfloat16)
     torch.set_default_device("cuda")
     torch.manual_seed(0)
-    args = ModelArgs()
+    args = SMALL
     x = torch.randint(0, args.vocab_size, (2, 128))
     model = Transformer(args)
     print(model(x).size())
