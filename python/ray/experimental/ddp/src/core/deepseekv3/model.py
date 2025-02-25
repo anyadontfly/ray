@@ -473,20 +473,26 @@ class MLA(nn.Module):
             mscale = 0.1 * args.mscale * math.log(args.rope_factor) + 1.0
             self.softmax_scale = self.softmax_scale * mscale * mscale
 
-        if attn_impl == "naive":
-            self.register_buffer("k_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.n_local_heads, self.qk_head_dim), persistent=False)
-            self.register_buffer("v_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.n_local_heads, self.v_head_dim), persistent=False)
-        else:
-            self.register_buffer("kv_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.kv_lora_rank), persistent=False)
-            self.register_buffer("pe_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.qk_rope_head_dim), persistent=False)
+        # (change): remove kv caching
+        # if attn_impl == "naive":
+        #     self.register_buffer("k_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.n_local_heads, self.qk_head_dim), persistent=False)
+        #     self.register_buffer("v_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.n_local_heads, self.v_head_dim), persistent=False)
+        # else:
+        #     self.register_buffer("kv_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.kv_lora_rank), persistent=False)
+        #     self.register_buffer("pe_cache", torch.zeros(args.max_batch_size, args.max_seq_len, self.qk_rope_head_dim), persistent=False)
 
-    def forward(self, x: torch.Tensor, start_pos: int, freqs_cis: torch.Tensor, mask: Optional[torch.Tensor]):
+    def forward(
+        self, x: torch.Tensor,
+        # start_pos: int,
+        freqs_cis: torch.Tensor,
+        mask: Optional[torch.Tensor]
+    ):
         """
         Forward pass for the Multi-Headed Attention Layer (MLA).
 
         Args:
             x (torch.Tensor): Input tensor of shape (batch_size, seq_len, dim).
-            start_pos (int): Starting position in the sequence for caching.
+            (removed for removing kv caching) start_pos (int): Starting position in the sequence for caching.
             freqs_cis (torch.Tensor): Precomputed complex exponential values for rotary embeddings.
             mask (Optional[torch.Tensor]): Mask tensor to exclude certain positions from attention.
 
@@ -494,7 +500,8 @@ class MLA(nn.Module):
             torch.Tensor: Output tensor with the same shape as the input.
         """
         bsz, seqlen, _ = x.size()
-        end_pos = start_pos + seqlen
+        # (change): remove kv caching
+        # end_pos = start_pos + seqlen
         if self.q_lora_rank == 0:
             q = self.wq(x)
         else:
@@ -511,24 +518,34 @@ class MLA(nn.Module):
             kv = kv.view(bsz, seqlen, self.n_local_heads, self.qk_nope_head_dim + self.v_head_dim)
             k_nope, v = torch.split(kv, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)
             k = torch.cat([k_nope, k_pe.expand(-1, -1, self.n_local_heads, -1)], dim=-1)
-            self.k_cache[:bsz, start_pos:end_pos] = k
-            self.v_cache[:bsz, start_pos:end_pos] = v
-            scores = torch.einsum("bshd,bthd->bsht", q, self.k_cache[:bsz, :end_pos]) * self.softmax_scale
+            # (change): remove kv caching
+            # self.k_cache[:bsz, start_pos:end_pos] = k
+            # self.v_cache[:bsz, start_pos:end_pos] = v
+            # scores = torch.einsum("bshd,bthd->bsht", q, self.k_cache[:bsz, :end_pos]) * self.softmax_scale
+            scores = torch.einsum("bshd,bthd->bsht", q, k) * self.softmax_scale
         else:
             wkv_b = self.wkv_b.weight if self.wkv_b.scale is None else weight_dequant(self.wkv_b.weight, self.wkv_b.scale, block_size) 
             wkv_b = wkv_b.view(self.n_local_heads, -1, self.kv_lora_rank)
             q_nope = torch.einsum("bshd,hdc->bshc", q_nope, wkv_b[:, :self.qk_nope_head_dim])
-            self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv)
-            self.pe_cache[:bsz, start_pos:end_pos] = k_pe.squeeze(2)
-            scores = (torch.einsum("bshc,btc->bsht", q_nope, self.kv_cache[:bsz, :end_pos]) +
-                      torch.einsum("bshr,btr->bsht", q_pe, self.pe_cache[:bsz, :end_pos])) * self.softmax_scale
+            # (change): remove kv caching
+            # self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv)
+            # self.pe_cache[:bsz, start_pos:end_pos] = k_pe.squeeze(2)
+            # scores = (torch.einsum("bshc,btc->bsht", q_nope, self.kv_cache[:bsz, :end_pos]) +
+            #           torch.einsum("bshr,btr->bsht", q_pe, self.pe_cache[:bsz, :end_pos])) * self.softmax_scale
+            kv = self.kv_norm(kv)
+            scores = (torch.einsum("bshc,btc->bsht", q_nope, kv) +
+                      torch.einsum("bshr,btr->bsht", q_pe, k_pe.squeeze(2))) * self.softmax_scale
         if mask is not None:
             scores += mask.unsqueeze(1)
         scores = scores.softmax(dim=-1, dtype=torch.float32).type_as(x)
         if attn_impl == "naive":
-            x = torch.einsum("bsht,bthd->bshd", scores, self.v_cache[:bsz, :end_pos])
+            # (change): remove kv caching
+            # x = torch.einsum("bsht,bthd->bshd", scores, self.v_cache[:bsz, :end_pos])
+            x = torch.einsum("bsht,bthd->bshd", scores, v)
         else:
-            x = torch.einsum("bsht,btc->bshc", scores, self.kv_cache[:bsz, :end_pos])
+            # (change): remove kv caching
+            # x = torch.einsum("bsht,btc->bshc", scores, self.kv_cache[:bsz, :end_pos])
+            x = torch.einsum("bsht,btc->bshc", scores, kv)
             x = torch.einsum("bshc,hdc->bshd", x, wkv_b[:, -self.v_head_dim:])
         x = self.wo(x.flatten(2))
         return x
@@ -767,7 +784,9 @@ class Block(nn.Module):
         Returns:
             torch.Tensor: Output tensor after block computation.
         """
-        x = x + self.attn(self.attn_norm(x), start_pos, freqs_cis, mask)
+        # (change) remove kv caching
+        # x = x + self.attn(self.attn_norm(x), start_pos, freqs_cis, mask)
+        x = x + self.attn(self.attn_norm(x), freqs_cis, mask)
         x = x + self.ffn(self.ffn_norm(x))
         return x
 
@@ -805,7 +824,7 @@ class Transformer(nn.Module):
         self.head = ColumnParallelLinear(args.dim, args.vocab_size, dtype=torch.get_default_dtype())
         self.register_buffer("freqs_cis", precompute_freqs_cis(args), persistent=False)
 
-    @torch.inference_mode()
+    # @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int = 0):
         """
         Forward pass for the Transformer model.
@@ -825,7 +844,7 @@ class Transformer(nn.Module):
             mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device).triu_(1)
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
-        # originaly only keep the last token of output
+        # (change) originaly only keep the last token of output
         # h = self.norm(h)[:, -1]
         h = self.norm(h)
         logits = self.head(h)
@@ -903,11 +922,11 @@ class AttentionRes(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        start_pos: int,
+        # start_pos: int,
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
     ):
-        return x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
+        return x + self.attention(self.attention_norm(x), freqs_cis, mask)
 
 
 class FeedForwardRes(nn.Module):
@@ -1042,13 +1061,13 @@ class TransformerMP(nn.Module):
             for layer in bparam.layers:
                 logger.warning(f"  {layer.__class__.__name__}")
 
-    def pre_forward(self, x: torch.Tensor, start_pos: int):
+    def pre_forward(self, x: torch.Tensor):
         seqlen = x.size(1)
-        freqs_cis = self.freqs_cis[start_pos:start_pos+seqlen]
+        freqs_cis = self.freqs_cis[:seqlen]
         mask = None
         if seqlen > 1:
             mask = torch.full((seqlen, seqlen), float("-inf"), device=x.device).triu_(1)
-        return (start_pos, freqs_cis, mask)
+        return (freqs_cis, mask)
 
 
 if __name__ == "__main__":

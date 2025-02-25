@@ -16,48 +16,41 @@ logging.basicConfig(
 )
 
 def main():
-    # torch.set_default_dtype(torch.bfloat16)
-    # torch.set_default_device("cuda")
-    # torch.manual_seed(42)
-    # args = SMALL
-    # x = torch.randint(0, args.vocab_size, (2, 128))
-    # model = Transformer(args)
-    # output = model(x)
-    # print(output, output.size(), output.dtype)
-
     torch.set_default_dtype(torch.bfloat16)
-    # torch.set_default_device("cuda")
+    torch.set_default_device("cuda:0")
     torch.manual_seed(42)
     args = SMALL
+
     batch_size = 2
     seq_len = 100
-    x = torch.randint(0, args.vocab_size, (batch_size, seq_len)).to("cuda")
-    model = Transformer(args).to("cuda:0")
-    output = model(x)
-    print(output, output.size(), output.dtype)
+    random_input = torch.randint(0, args.vocab_size, (batch_size, seq_len))
+    random_target = torch.randn(batch_size, seq_len, args.vocab_size)
 
-    # criterion = nn.CrossEntropyLoss()
-    # optimizer = optim.SGD(model.parameters(), lr=0.001)
-    # logger.debug(f"Model structure: {model}, criterion: {criterion}, optimizer: {optimizer}.")
+    model = Transformer(args)
+    # output = model(random_input)
+    # print(output, output.size(), output.dtype)
 
-    # num_epochs = 6
-    # for epoch in range(num_epochs):
-    #     outputs = model.forward(random_input, 0)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(), lr=0.001)
+    logger.debug(f"Model structure: {model}, criterion: {criterion}, optimizer: {optimizer}.")
 
-    #     loss = criterion(outputs, random_target)
-    #     loss.backward()
+    num_epochs = 6
+    for epoch in range(num_epochs):
+        outputs = model.forward(random_input, 0)
 
-    #     logger.debug(f"Gradient of first attention layer: {model.layers[0].attention.wq.weight.grad}, shape: {model.layers[0].attention.wq.weight.shape}")
+        loss = criterion(outputs, random_target)
+        loss.backward()
 
-    #     optimizer.step()
-    #     optimizer.zero_grad()
+        logger.debug(f"Gradient of first attention layer: {model.layers[0].attn.wo.weight.grad}, shape: {model.layers[0].attn.wo.weight.shape}")
 
-    #     logger.debug(f"Params of first attention layer after step: {model.layers[0].attention.wq.weight}")
+        optimizer.step()
+        optimizer.zero_grad()
 
-    #     logger.info(f"Epoch {epoch}, loss: {loss.item()}")
+        logger.debug(f"Params of first attention layer after step: {model.layers[0].attn.wo.weight}")
+
+        logger.info(f"Epoch {epoch}, loss: {loss.item()}")
 
 
 if __name__ == "__main__":
     torch.manual_seed(42)
-
     main()
