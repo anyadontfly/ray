@@ -1,0 +1,188 @@
+import logging
+import time
+from collections import defaultdict
+from typing import Any, Dict, List
+
+import torch
+
+import ray
+from ..common import secs_to_micros
+from .model import TransformerMP, SMALL
+
+logger = logging.getLogger(__name__)
+
+
+@ray.remote
+class DeepSeekActor:
+    def __init__(
+        self,
+        rank: int,
+        num_models: int,
+        num_actors: int,
+        device: torch.device,
+        check_tracing: bool,
+    ):
+        torch.set_default_dtype(torch.bfloat16)
+        self.deepseek = TransformerMP(SMALL).to(device)
+        self.models = [bparam.to(device) for bparam in self.deepseek.bucket_params]
+        assert num_models == len(self.models)
+
+        self.rank = rank
+        self.num_models = num_models
+        self.num_actors = num_actors
+        self.device = device
+        self.check_tracing = check_tracing
+        self.model_args = SMALL
+
+        for model in self.models:
+            size_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+            logger.warning(f"Model size: {size_bytes / 1024 / 1024:.2f} MiB")
+        self.intermediates: List[torch.Tensor, torch.Tensor] = []
+
+        self.it = 0
+        self.time: Dict[str, Any] = {}
+        self.elapses: Dict[str, List] = defaultdict(list)
+
+    def init_weights(self) -> None:
+        raise NotImplementedError
+
+    def init_training(self, batch_size: int) -> None:
+        torch.set_default_dtype(torch.bfloat16)
+        self.models[0].x = torch.randint(
+            0,
+            self.model_args.vocab_size,
+            (batch_size, self.model_args.max_seq_len)
+        ).to(self.device)
+        self.models[-1].y = torch.randn(
+            batch_size,
+            self.model_args.max_seq_len,
+            self.model_args.vocab_size
+        ).to(self.device)
+        self.attention_args = self.deepseek.pre_forward(self.models[0].x)
+
+    def update_time(self, key: str) -> None:
+        timestamp = time.perf_counter()
+        if key not in self.time:
+            self.time[key] = timestamp
+        else:
+            assert isinstance(self.time[key], list)
+            self.time[key].append(timestamp)
+
+    def init_tracing(self) -> None:
+        self.time: Dict[str, Any] = {
+            "forward_starts": [],
+            "forward_ends": [],
+            "backward_starts": [],
+            "backward_ends": [],
+            "update_starts": [],
+            "update_ends": [],
+        }
+
+    def finish_tracing(self) -> None:
+        # logger = logging.getLogger(__name__)
+        logger.warning(f"Actor {self.rank} finished iteration {self.it}")
+
+        self.intermediates = []
+        self.it += 1
+        if self.it <= 1:
+            return
+
+        total = self.time["end"] - self.time["start"]
+
+        def log(key: str, elapse: float):
+            self.elapses[key].append(secs_to_micros(elapse))
+            logger.warning(
+                f"{key} elapse: {secs_to_micros(elapse)} us, percent: {round(elapse / total * 100, 1)}%"
+            )
+
+        log(
+            "actor.total",
+            total,
+        )
+        if self.check_tracing:
+            log(
+                "fw.total",
+                self.time["forward_ends"][-1] - self.time["forward_starts"][0],
+            )
+            bw_total = self.time["update_ends"][-1] - self.time["backward_starts"][0]
+            bw_backward = sum(
+                [
+                    self.time["backward_ends"][i] - self.time["backward_starts"][i]
+                    for i in range(self.num_models)
+                ]
+            )
+            bw_update = sum(
+                [
+                    self.time["update_ends"][i] - self.time["update_starts"][i]
+                    for i in range(self.num_models)
+                ]
+            )
+            bw_others = bw_total - bw_backward - bw_update
+            log("bw.total", bw_total)
+            log("bw.backward", bw_backward)
+            log("bw.others", bw_others)
+            log("bw.update", bw_update)
+            # logger.warning("")
+            # for i in range(len(self.time["backward_starts"])):
+            #     log(
+            #         f"bw.backward.{i}",
+            #         self.time["backward_ends"][i] - self.time["backward_starts"][i],
+            #     )
+        logger.warning("")
+
+    def fetch_weights(self) -> List[torch.Tensor]:
+        raise NotImplementedError
+
+    def fetch_traces(self) -> Dict[str, List[float]]:
+        return self.elapses
+
+    def forward(self, _) -> None:
+        self.update_time("start")
+        if self.check_tracing:
+            self.update_time("forward_starts")
+        self.intermediates = []
+        input = self.models[0].x
+        for i, model in enumerate(self.models):
+            pred = model.forward(input, *self.attention_args)
+            if i < len(self.models) - 1:
+                input = pred.detach().requires_grad_(True)
+            else:
+                input = pred
+            self.intermediates.append((pred, input))
+        if self.check_tracing:
+            self.update_time("forward_ends")
+
+    def backward(self, _, idx: int) -> torch.Tensor:
+        if self.check_tracing:
+            self.update_time("backward_starts")
+        if idx == len(self.models) - 1:
+            loss = self.models[idx].criterion(
+                self.intermediates[idx][0],
+                self.models[idx].y,
+            )
+            pred = None
+            grad = None
+        else:
+            loss = None
+            pred, input = self.intermediates[idx]
+            grad = input.grad
+            self.intermediates[idx] = (None, None)
+        grads = self.models[idx].backward(
+            loss=loss,
+            pred=pred,
+            grad=grad,
+        )
+        if self.check_tracing:
+            self.update_time("backward_ends")
+        return grads
+
+    def update(self, grads_cat: torch.Tensor, grads_passed: bool, idx: int) -> None:
+        if self.check_tracing:
+            self.update_time("update_starts")
+        if grads_passed:
+            grads_cat /= self.num_actors
+        self.models[idx].update(grads_cat, grads_passed)
+        if self.check_tracing:
+            self.update_time("update_ends")
+        if idx == 0:
+            self.update_time("end")
