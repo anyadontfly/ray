@@ -140,7 +140,9 @@ class ParallelEmbedding(nn.Module):
         self.part_vocab_size = (vocab_size // world_size)
         self.vocab_start_idx = rank * self.part_vocab_size
         self.vocab_end_idx = self.vocab_start_idx + self.part_vocab_size
-        self.weight = nn.Parameter(torch.empty(self.part_vocab_size, self.dim))
+        # (change): non-zero init
+        # self.weight = nn.Parameter(torch.empty(self.part_vocab_size, self.dim))
+        self.weight = nn.Parameter(torch.randn(self.part_vocab_size, self.dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -871,11 +873,12 @@ class BucketParameter(nn.Module):
     def forward(self, x: Tensor, *args) -> Tensor:
         if self.to_flat:
             x = torch.flatten(x, 1)
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
             if isinstance(layer, AttentionRes):
                 x = layer(x, *args)
             else:
                 x = layer(x)
+            print(f"    layer: {i}, {x}")
         return x
 
     def backward(
@@ -1030,6 +1033,7 @@ class TransformerMP(nn.Module):
             self.norm,
             self.head
         ]
+        # print(f"head: {self.head}")
 
         for layer in _layers_to_bucket:
             show_layer_size(layer)
