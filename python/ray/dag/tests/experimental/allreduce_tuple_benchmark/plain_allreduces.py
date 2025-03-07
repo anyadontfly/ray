@@ -21,35 +21,64 @@ class TensorGenerator:
     def generate(self, *args):
         return torch.randn(self.tensor_size).to(self.device)
     
-    def generate_ten(self, *args):
-        return tuple(torch.randn(self.tensor_size).to(self.device) for _ in range(10))
+    def generate_n(self, n):
+        return tuple(torch.randn(self.tensor_size).to(self.device) for _ in range(n))
 
 num_generators = 2
-generators = [TensorGenerator.options(num_gpus=1).remote(4096) for _ in range(num_generators)]
+num_tensors = [10, 15, 20, 25, 30]
+generators = [TensorGenerator.options(num_gpus=1).remote((4096, 8)) for _ in range(num_generators)]
 
-with InputNode() as inp:
-    all_results = []
+
+USE_TUPLE = False
+
+if USE_TUPLE:
+    with InputNode() as inp:
+        tensors = [generator.generate_n.bind(inp) for generator in generators]
+        results = allreduce.bind(tensors)
+        dag_tuple = MultiOutputNode(results)
     
-    for _ in range(10):
-        tensors = [generator.generate.bind(inp) for generator in generators]
-        all_results.extend(allreduce.bind(tensors))
+    compiled_dag = dag_tuple.experimental_compile()
+    times = {}
+    for num_tensor in num_tensors:
+        # warm up
+        ref = compiled_dag.execute(num_tensor)
+        ray.get(ref)
 
-    dag_no_tuple = MultiOutputNode(all_results)
+        time_total = 0
+        for i in range(5):
+            time_start = time.perf_counter()
+            ref = compiled_dag.execute(num_tensor)
+            ray.get(ref)
+            time_end = time.perf_counter()
+            time_total += time_end - time_start
+        times[num_tensor] = round(time_total / 5, 4)
+    for key, value in times.items():
+        print(f"Num generations: {key}, Avg time: {value} s")
+else:
+    times = {}
+    for num_tensor in num_tensors:
 
-with InputNode() as inp:
-    tensors = [generator.generate_ten.bind(inp) for generator in generators]
-    results = allreduce.bind(tensors)
-    dag_tuple = MultiOutputNode(results)
+        with InputNode() as inp:
+            all_results = []
+            
+            for _ in range(num_tensor):
+                tensors = [generator.generate.bind(inp) for generator in generators]
+                all_results.extend(allreduce.bind(tensors))
 
-compiled_dag = dag_tuple.experimental_compile()
-ref = compiled_dag.execute(0)
-ray.get(ref)
+            dag_no_tuple = MultiOutputNode(all_results)
+        
+        compiled_dag = dag_no_tuple.experimental_compile()
+        ref = compiled_dag.execute(None)
+        ray.get(ref)
 
-time_total = 0
-for i in range(5):
-    time_start = time.perf_counter()
-    ref = compiled_dag.execute(0)
-    ray.get(ref)
-    time_end = time.perf_counter()
-    time_total += time_end - time_start
-print(f"Avg time: {time_total/5:.4f} s")
+        time_total = 0
+        for i in range(5):
+            time_start = time.perf_counter()
+            ref = compiled_dag.execute(None)
+            ray.get(ref)
+            time_end = time.perf_counter()
+            time_total += time_end - time_start
+        times[num_tensor] = round(time_total / 5, 4)
+        compiled_dag.teardown()
+    for key, value in times.items():
+        print(f"Num generations: {key}, Avg time: {value} s")

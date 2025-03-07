@@ -131,9 +131,9 @@ assert (
 
 torch.manual_seed(42)
 
-input_size = 4096*2
-hidden_size = 4096*2
-output_size = 4096*2
+input_size = 4096
+hidden_size = 32
+output_size = 4096
 
 def load_x1_x2_y1_y2():
     x1 = torch.randn(1, input_size).cuda()
