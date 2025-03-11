@@ -41,66 +41,72 @@ class TensorGenerator:
 # number of actors
 num_generators = 2
 # number of tensors to allreduce
-num_tensors_lst = [32, 64, 128]
+pwr = 9
+num_tensors = 2 ** pwr
 # bucket sizes
-bucket_sizes = [1, 2, 4, 8, 16, 32]
+bucket_sizes = [2 ** i for i in range(pwr)]
 # shape of each tensor
 tensor_shape = (4096, 32)
+# size of each tensor in MB
+# _t_size = 4 * tensor_shape[0] * tensor_shape[1] / (1024 ** 2)
+_t_size = tensor_shape[0] * tensor_shape[1] 
+# bucket sizes in MB
+bucket_sizes_MB = [bucket_size * _t_size for bucket_size in bucket_sizes]
+
 
 # two actors, one for each GPU
-generators = [TensorGenerator.options(num_gpus=1).remote(tensor_shape, 50) for _ in range(num_generators)]
+generators = [TensorGenerator.options(num_gpus=1).remote(tensor_shape, num_tensors) for _ in range(num_generators)]
 
-times = defaultdict(list)
+times = []
 
 
-for num_tensors in num_tensors_lst:
-    for bucket_size in bucket_sizes:
-        # number of allreduce operations
-        num_ar = int(num_tensors / bucket_size)
+for bucket_size in bucket_sizes:
+    # number of allreduce operations
+    num_ar = int(num_tensors / bucket_size)
 
-        with InputNode() as inp:
-            inp0, inp1 = inp, inp
-            for _ in range(num_ar):
-                # if bucket_size is 1, use get_tensor, else use get_tuple
-                if bucket_size == 1:
-                    tensors = [
-                        generator.get_tensor.bind(_inp)
-                        for generator, _inp in zip(generators, [inp0, inp1])
-                    ]
-                else:
-                    tensors = [
-                        generator.get_tuple.bind(_inp)
-                        for generator, _inp in zip(generators, [inp0, inp1])
-                    ]
-                results = allreduce.bind(tensors)
-                inp0, inp1 = [
-                    generator.recv.bind(result)
-                    for generator, result in zip(generators, results)
+    with InputNode() as inp:
+        inp0, inp1 = inp, inp
+        for _ in range(num_ar):
+            # if bucket_size is 1, use get_tensor, else use get_tuple
+            if bucket_size == 1:
+                tensors = [
+                    generator.get_tensor.bind(_inp)
+                    for generator, _inp in zip(generators, [inp0, inp1])
                 ]
+            else:
+                tensors = [
+                    generator.get_tuple.bind(_inp)
+                    for generator, _inp in zip(generators, [inp0, inp1])
+                ]
+            results = allreduce.bind(tensors)
+            inp0, inp1 = [
+                generator.recv.bind(result)
+                for generator, result in zip(generators, results)
+            ]
 
-            dag = MultiOutputNode([inp0, inp1])
+        dag = MultiOutputNode([inp0, inp1])
 
-        # first time of running compiled dag is not counted
-        compiled_dag = dag.experimental_compile()
+    # first time of running compiled dag is not counted
+    compiled_dag = dag.experimental_compile()
+    ref = compiled_dag.execute(bucket_size)
+    ray.get(ref)
+
+    # average time of 5 runs
+    time_total = 0
+    for i in range(5):
+        time_start = time.perf_counter()
         ref = compiled_dag.execute(bucket_size)
         ray.get(ref)
+        time_end = time.perf_counter()
+        time_total += (time_end - time_start)
+    times.append(time_total / 5 * 1000)
+    
+    compiled_dag.teardown()
 
-        # average time of 5 runs
-        time_total = 0
-        for i in range(5):
-            time_start = time.perf_counter()
-            ref = compiled_dag.execute(bucket_size)
-            ray.get(ref)
-            time_end = time.perf_counter()
-            time_total += (time_end - time_start)
-        times[num_tensors].append(time_total / 5 * 1000)
-        
-        compiled_dag.teardown()
-
-for num_tensors in times.keys():
-    plt.plot(bucket_sizes, times[num_tensors], label=f"{num_tensors} tensors")
-plt.legend()
-plt.xlabel("Bucket size")
+plt.scatter(bucket_sizes_MB, times)
+plt.xscale("log")
+plt.yscale("log")
+plt.xlabel("num parameter")
 plt.ylabel("Time (ms)")
 plt.title(f"tensor_size={tensor_shape}")
 plt.savefig("python/ray/dag/tests/experimental/allreduce_tuple_benchmark/allreduce_tuple_benchmark.png")
