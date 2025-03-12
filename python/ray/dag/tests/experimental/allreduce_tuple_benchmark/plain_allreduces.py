@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 ray.init(num_gpus=2)
 
 torch.manual_seed(42)
+torch.set_default_dtype(torch.float32)
 
 @ray.remote
 class TensorGenerator:
@@ -48,8 +49,7 @@ bucket_sizes = [2 ** i for i in range(pwr)]
 # shape of each tensor
 tensor_shape = (4096, 32)
 # size of each tensor in MB
-# _t_size = 4 * tensor_shape[0] * tensor_shape[1] / (1024 ** 2)
-_t_size = tensor_shape[0] * tensor_shape[1] 
+_t_size = 4 * tensor_shape[0] * tensor_shape[1] / (1024 ** 2)
 # bucket sizes in MB
 bucket_sizes_MB = [bucket_size * _t_size for bucket_size in bucket_sizes]
 
@@ -58,7 +58,6 @@ bucket_sizes_MB = [bucket_size * _t_size for bucket_size in bucket_sizes]
 generators = [TensorGenerator.options(num_gpus=1).remote(tensor_shape, num_tensors) for _ in range(num_generators)]
 
 times = []
-
 
 for bucket_size in bucket_sizes:
     # number of allreduce operations
@@ -106,7 +105,7 @@ for bucket_size in bucket_sizes:
 plt.scatter(bucket_sizes_MB, times)
 plt.xscale("log")
 plt.yscale("log")
-plt.xlabel("num parameter")
+plt.xlabel("Bucket size (MB)")
 plt.ylabel("Time (ms)")
 plt.title(f"tensor_size={tensor_shape}")
 plt.savefig("python/ray/dag/tests/experimental/allreduce_tuple_benchmark/allreduce_tuple_benchmark.png")
