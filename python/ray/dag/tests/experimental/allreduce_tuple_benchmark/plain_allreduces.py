@@ -24,10 +24,6 @@ class TensorGenerator:
         # initialize a pool of tensors so that time is not spent on initialization during dag execution
         self.tensors = set(torch.randn(self.tensor_size).to(self.device) for _ in range(n_tensors))
 
-    def get_tensor(self, *args):
-        # pop a tensor from the pool
-        return self.tensors.pop()
-    
     def get_tuple(self, n):
         # pop n tensors from the pool
         return tuple(self.tensors.pop() for _ in range(n))
@@ -66,17 +62,10 @@ for bucket_size in bucket_sizes:
     with InputNode() as inp:
         inp0, inp1 = inp, inp
         for _ in range(num_ar):
-            # if bucket_size is 1, use get_tensor, else use get_tuple
-            if bucket_size == 1:
-                tensors = [
-                    generator.get_tensor.bind(_inp)
-                    for generator, _inp in zip(generators, [inp0, inp1])
-                ]
-            else:
-                tensors = [
-                    generator.get_tuple.bind(_inp)
-                    for generator, _inp in zip(generators, [inp0, inp1])
-                ]
+            tensors = [
+                generator.get_tuple.bind(_inp)
+                for generator, _inp in zip(generators, [inp0, inp1])
+            ]
             results = allreduce.bind(tensors)
             inp0, inp1 = [
                 generator.recv.bind(result)
