@@ -84,6 +84,13 @@ class ModelArgs:
     mscale: float = 1.
 
 
+DEEPSEEKV3_DEBUG = ModelArgs(
+    dim=1024,  # 1/2
+    n_layers=12,
+    n_routed_experts=16,
+)
+
+
 class ParallelEmbedding(nn.Module):
     """
     Embedding layer with parallelism support across distributed processes.
@@ -177,7 +184,8 @@ class Linear(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.weight = nn.Parameter(torch.empty(out_features, in_features, dtype=dtype or Linear.dtype))
+        # self.weight = nn.Parameter(torch.empty(out_features, in_features, dtype=dtype or Linear.dtype))
+        self.weight = nn.Parameter(torch.randn(out_features, in_features, dtype=dtype or Linear.dtype))
         if self.weight.element_size() == 1:
             scale_out_features = (out_features + block_size - 1) // block_size
             scale_in_features = (in_features + block_size - 1) // block_size
@@ -419,15 +427,19 @@ class MLA(nn.Module):
         self.v_head_dim = args.v_head_dim
 
         if self.q_lora_rank == 0:
-            self.wq = ColumnParallelLinear(self.dim, self.n_heads * self.qk_head_dim)
+            # self.wq = ColumnParallelLinear(self.dim, self.n_heads * self.qk_head_dim)
+            self.wq = Linear(self.dim, self.n_heads * self.qk_head_dim)
         else:
             self.wq_a = Linear(self.dim, self.q_lora_rank)
             self.q_norm = RMSNorm(self.q_lora_rank)
-            self.wq_b = ColumnParallelLinear(self.q_lora_rank, self.n_heads * self.qk_head_dim)
+            # self.wq_b = ColumnParallelLinear(self.q_lora_rank, self.n_heads * self.qk_head_dim)
+            self.wq_b = Linear(self.q_lora_rank, self.n_heads * self.qk_head_dim)
         self.wkv_a = Linear(self.dim, self.kv_lora_rank + self.qk_rope_head_dim)
         self.kv_norm = RMSNorm(self.kv_lora_rank)
-        self.wkv_b = ColumnParallelLinear(self.kv_lora_rank, self.n_heads * (self.qk_nope_head_dim + self.v_head_dim))
-        self.wo = RowParallelLinear(self.n_heads * self.v_head_dim, self.dim)
+        # self.wkv_b = ColumnParallelLinear(self.kv_lora_rank, self.n_heads * (self.qk_nope_head_dim + self.v_head_dim))
+        self.wkv_b = Linear(self.kv_lora_rank, self.n_heads * (self.qk_nope_head_dim + self.v_head_dim))
+        # self.wo = RowParallelLinear(self.n_heads * self.v_head_dim, self.dim)
+        self.wo = Linear(self.n_heads * self.v_head_dim, self.dim)
         self.softmax_scale = self.qk_head_dim ** -0.5
         if args.max_seq_len > args.original_seq_len:
             mscale = 0.1 * args.mscale * math.log(args.rope_factor) + 1.0
@@ -512,9 +524,12 @@ class MLP(nn.Module):
             inter_dim (int): Hidden layer dimensionality.
         """
         super().__init__()
-        self.w1 = ColumnParallelLinear(dim, inter_dim)
-        self.w2 = RowParallelLinear(inter_dim, dim)
-        self.w3 = ColumnParallelLinear(dim, inter_dim)
+        # self.w1 = ColumnParallelLinear(dim, inter_dim)
+        # self.w2 = RowParallelLinear(inter_dim, dim)
+        # self.w3 = ColumnParallelLinear(dim, inter_dim)
+        self.w1 = Linear(dim, inter_dim)
+        self.w2 = Linear(inter_dim, dim)
+        self.w3 = Linear(dim, inter_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -685,8 +700,8 @@ class MoE(nn.Module):
             idx, top = torch.where(indices == i)
             y[idx] += expert(x[idx]) * weights[idx, top, None]
         z = self.shared_experts(x)
-        if world_size > 1:
-            dist.all_reduce(y)
+        # if world_size > 1:
+        #     dist.all_reduce(y)
         return (y + z).view(shape)
 
 
@@ -751,21 +766,26 @@ class Transformer(nn.Module):
         Args:
             args (ModelArgs): Model arguments containing transformer parameters.
         """
-        global world_size, rank
-        world_size = dist.get_world_size() if dist.is_initialized() else 1
-        rank = dist.get_rank() if dist.is_initialized() else 0
+        # global world_size, rank
+        # world_size = dist.get_world_size() if dist.is_initialized() else 1
+        # rank = dist.get_rank() if dist.is_initialized() else 0
         Linear.dtype = torch.float8_e4m3fn if args.dtype == "fp8" else torch.bfloat16
         super().__init__()
         self.max_seq_len = args.max_seq_len
-        self.embed = ParallelEmbedding(args.vocab_size, args.dim)
+        # self.embed = ParallelEmbedding(args.vocab_size, args.dim)
+        self.embed = nn.Embedding(
+            args.vocab_size,
+            args.dim,
+        )
         self.layers = torch.nn.ModuleList()
         for layer_id in range(args.n_layers):
             self.layers.append(Block(layer_id, args))
         self.norm = RMSNorm(args.dim)
-        self.head = ColumnParallelLinear(args.dim, args.vocab_size, dtype=torch.get_default_dtype())
+        # self.head = ColumnParallelLinear(args.dim, args.vocab_size, dtype=torch.get_default_dtype())
+        self.head = Linear(args.dim, args.vocab_size)
         self.register_buffer("freqs_cis", precompute_freqs_cis(args), persistent=False)
 
-    @torch.inference_mode()
+    # @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int = 0):
         """
         Forward pass for the Transformer model.
@@ -787,10 +807,10 @@ class Transformer(nn.Module):
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)[:, -1]
         logits = self.head(h)
-        if world_size > 1:
-            all_logits = [torch.empty_like(logits) for _ in range(world_size)]
-            dist.all_gather(all_logits, logits)
-            logits = torch.cat(all_logits, dim=-1)
+        # if world_size > 1:
+        #     all_logits = [torch.empty_like(logits) for _ in range(world_size)]
+        #     dist.all_gather(all_logits, logits)
+        #     logits = torch.cat(all_logits, dim=-1)
         return logits
 
 
@@ -798,7 +818,8 @@ if __name__ == "__main__":
     torch.set_default_dtype(torch.bfloat16)
     torch.set_default_device("cuda")
     torch.manual_seed(0)
-    args = ModelArgs()
+    # args = ModelArgs()
+    args = DEEPSEEKV3_DEBUG
     x = torch.randint(0, args.vocab_size, (2, 128))
     model = Transformer(args)
     print(model(x).size())
