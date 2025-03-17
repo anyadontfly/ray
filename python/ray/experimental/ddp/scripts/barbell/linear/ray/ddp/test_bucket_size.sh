@@ -32,10 +32,10 @@ rm -f $output_path/*.csv
 rm -f $output_path/*.log
 rm -f $output_path/*.png
 
-layer_size=4096
-num_layers=32
+layer_size=1280
+num_layers=40
 num_partitions_values=(
-    1 2 4 8 16 32
+    1 2 5 10 20 40
 )
 num_actors=2
 num_iters=10

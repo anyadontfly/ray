@@ -62,7 +62,7 @@ def process_folder(folder_path: str) -> List[Experiment]:
 
 
 def compare_experiments(mode_to_experiments: Dict[str, List[Experiment]]):
-    modes = ["ray/no_overlap", "torch/ddp"]
+    modes = ["ray/ddp", "torch/ddp"]
     print(f"# {modes[0]} {modes[1]}")
     print()
 
@@ -114,7 +114,7 @@ def compare_experiments(mode_to_experiments: Dict[str, List[Experiment]]):
 def main():
     args: Dict[str, Any] = {}
     args["folders"] = [
-        "results/barbell/linear/ray/no_overlap/exp_self",
+        "results/barbell/linear/ray/ddp/exp_self",
         "results/barbell/linear/torch/ddp/exp_self",
     ]
 
