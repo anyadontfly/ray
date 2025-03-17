@@ -1,6 +1,6 @@
 import logging
 from types import ModuleType
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 import ray
 from ray.exceptions import RayChannelError
@@ -114,11 +114,15 @@ class _NcclGroup(Communicator):
                 self._coll_stream = cp.cuda.ExternalStream(
                     torch.cuda.Stream().cuda_stream, device_id=device.index
                 )
+                self._copy_stream = cp.cuda.ExternalStream(
+                    torch.cuda.Stream().cuda_stream, device_id=device.index
+                )
             else:
                 stream = cp.cuda.ExternalStream(cuda_stream, device_id=device.index)
                 self._send_stream = stream
                 self._recv_stream = stream
                 self._coll_stream = stream
+                self._copy_stream = stream
 
         self._closed = False
 
@@ -256,8 +260,8 @@ class _NcclGroup(Communicator):
 
     def allreduce(
         self,
-        send_buf: "torch.Tensor",
-        recv_buf: "torch.Tensor",
+        send_buf: Union["torch.Tensor", Tuple["torch.Tensor", ...]],
+        recv_buf: Union["torch.Tensor", Tuple["torch.Tensor", ...]],
         op: ReduceOp = ReduceOp.SUM,
     ):
         import torch
@@ -265,23 +269,65 @@ class _NcclGroup(Communicator):
         if self._closed:
             raise RayChannelError("NCCL group has been destroyed.")
 
-        assert send_buf.dtype == recv_buf.dtype, (
-            "Ray Compiled Graph derived the dtype of recv_buf from send_buf, "
-            "so send_buf and recv_buf must have the same dtype. "
-            "If you see this error, please file an issue at Ray repository."
-        )
+        if isinstance(send_buf, torch.Tensor):
+            assert send_buf.dtype == recv_buf.dtype, (
+                "Ray Compiled Graph derived the dtype of recv_buf from send_buf, "
+                "so send_buf and recv_buf must have the same dtype. "
+                "If you see this error, please file an issue at Ray repository."
+            )
 
-        # Record the buffer is used by the collective stream.
-        send_buf.record_stream(torch.cuda.ExternalStream(self._coll_stream.ptr))
+            # Record the buffer is used by the collective stream.
+            send_buf.record_stream(torch.cuda.ExternalStream(self._coll_stream.ptr))
 
-        self._comm.allReduce(
-            self.nccl_util.get_tensor_ptr(send_buf),
-            self.nccl_util.get_tensor_ptr(recv_buf),
-            send_buf.numel(),
-            self.nccl_util.get_nccl_tensor_dtype(send_buf),
-            op.value,
-            self._coll_stream.ptr,
-        )
+            self._comm.allReduce(
+                self.nccl_util.get_tensor_ptr(send_buf),
+                self.nccl_util.get_tensor_ptr(recv_buf),
+                send_buf.numel(),
+                self.nccl_util.get_nccl_tensor_dtype(send_buf),
+                op.value,
+                self._coll_stream.ptr,
+            )
+        else:
+            assert len(set(t.dtype for t in send_buf)) == 1, (
+                "Expected tensors have same dtype"
+            )
+
+            total_size = sum(g.numel() for g in send_buf)
+            flat_buf = torch.empty(total_size, dtype=send_buf[0].dtype, device=send_buf[0].device)
+
+            # Record the flat buffer is used by the copy stream.
+            flat_buf.record_stream(torch.cuda.ExternalStream(self._copy_stream.ptr))
+
+            with self._copy_stream:
+                offset = 0
+                for t in send_buf:
+                    flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
+                    offset += t.numel()
+
+            # Record the flat buffer is used by the collective stream.
+            flat_buf.record_stream(torch.cuda.ExternalStream(self._coll_stream.ptr))
+
+            print(f"before {flat_buf}")
+
+            self._comm.allReduce(
+                self.nccl_util.get_tensor_ptr(flat_buf),
+                self.nccl_util.get_tensor_ptr(flat_buf),
+                flat_buf.numel(),
+                self.nccl_util.get_nccl_tensor_dtype(flat_buf),
+                op.value,
+                self._coll_stream.ptr,
+            )
+
+            print(f"after {flat_buf}")
+
+            # Record the flat buffer is used by the copy stream.
+            flat_buf.record_stream(torch.cuda.ExternalStream(self._copy_stream.ptr))
+
+            with self._copy_stream:
+                offset = 0
+                for t in recv_buf:
+                    t.copy_(flat_buf[offset:offset + t.numel()].view(t.shape))
+                    offset += t.numel()
 
         # Buffer values are undefined if NCCL ops are aborted. Therefore, we
         # need to synchronize here and check that the channel is still open to
@@ -308,6 +354,10 @@ class _NcclGroup(Communicator):
     @property
     def coll_stream(self) -> Optional["cp.cuda.ExternalStream"]:
         return self._coll_stream
+    
+    @property
+    def copy_stream(self) -> Optional["cp.cuda.ExternalStream"]:
+        return self._copy_stream
 
     def destroy(self) -> None:
         """

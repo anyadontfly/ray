@@ -136,17 +136,22 @@ class _CollectiveOperation(_NcclOperation):
             raise ValueError("Expected a NCCL group")
         return communicator
 
-    def execute(self, send_buf: "torch.Tensor") -> "torch.Tensor":
+    def execute(self, send_buf: Union["torch.Tensor", Tuple["torch.Tensor", ...]]) -> "torch.Tensor":
         """
         Call the collective operation on the input tensor. An output tensor is
         allocated and returned.
         """
         import torch
 
-        if not isinstance(send_buf, torch.Tensor):
-            raise ValueError("Expected a torch tensor")
+        if not isinstance(send_buf, (torch.Tensor, tuple)):
+            raise ValueError("Expected a torch tensor or a tuple of torch tensors")
         communicator = self.get_communicator()
-        recv_buf = torch.empty_like(send_buf)
+        if isinstance(send_buf, tuple):
+            recv_buf = tuple(
+                torch.empty_like(tensor) for tensor in send_buf
+            )
+        else:
+            recv_buf = torch.empty_like(send_buf)
         communicator.allreduce(send_buf, recv_buf, self._op)
         return recv_buf
 
