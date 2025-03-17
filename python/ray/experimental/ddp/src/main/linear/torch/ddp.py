@@ -82,10 +82,14 @@ def spwan_torch_ddp(
         size_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
         logger.warning(f"Model size: {size_bytes / 1024 / 1024} MB")
 
+        num_partitions = args["num_partitions"]
+        bucket_size_mb = size_bytes / 1024 / 1024 / num_partitions
+        logger.warning(f"Bucket size: {bucket_size_mb} MB")
+
         torch.manual_seed(998244353)
         model.init_weights()
         model = model.to(model.device)
-        ddp_model = DDP(model, device_ids=[rank])
+        ddp_model = DDP(model, device_ids=[rank], bucket_cap_mb=bucket_size_mb)
 
         elapses = defaultdict(list)
 
