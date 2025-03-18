@@ -1061,7 +1061,7 @@ def _free_peer_shards(model: torch.nn.Module) -> None:
 
 class TransformerBP(nn.Module):
     def __init__(self, params: ModelArgs):
-        Linear.dtype = torch.float8_e4m3fn if args.dtype == "fp8" else torch.bfloat16
+        Linear.dtype = torch.float8_e4m3fn if params.dtype == "fp8" else torch.bfloat16
         super().__init__()
         self.max_seq_len = params.max_seq_len
         self.params = params
