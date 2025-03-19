@@ -895,6 +895,7 @@ class ExecutableTask:
                 raise exc
             else:
                 output_val = _wrap_exception(exc)
+                logger.error(f"exec_operation exception: {output_val}")
 
         # Write the output to the downstream task. Wrap the output in a GPU future
         # if overlapping GPU communication.

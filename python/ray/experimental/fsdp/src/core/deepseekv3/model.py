@@ -986,7 +986,7 @@ class Shard(torch.nn.Module):
 
     def get_flat_grad(self) -> torch.Tensor:
         flat_grad = parameters_to_vector(
-            [param.grad for param in self.model.parameters()]
+            [param.grad if param.grad is not None else torch.zeros_like(param) for param in self.model.parameters()]
         )
         return flat_grad
 
