@@ -114,15 +114,11 @@ class _NcclGroup(Communicator):
                 self._coll_stream = cp.cuda.ExternalStream(
                     torch.cuda.Stream().cuda_stream, device_id=device.index
                 )
-                self._copy_stream = cp.cuda.ExternalStream(
-                    torch.cuda.Stream().cuda_stream, device_id=device.index
-                )
             else:
                 stream = cp.cuda.ExternalStream(cuda_stream, device_id=device.index)
                 self._send_stream = stream
                 self._recv_stream = stream
                 self._coll_stream = stream
-                self._copy_stream = stream
 
         self._closed = False
 
@@ -295,19 +291,13 @@ class _NcclGroup(Communicator):
             total_size = sum(g.numel() for g in send_buf)
             flat_buf = torch.empty(total_size, dtype=send_buf[0].dtype, device=send_buf[0].device)
 
-            # Record the flat buffer is used by the copy stream.
-            flat_buf.record_stream(torch.cuda.ExternalStream(self._copy_stream.ptr))
-
-            with self._copy_stream:
-                offset = 0
-                for t in send_buf:
-                    flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
-                    offset += t.numel()
+            offset = 0
+            for t in send_buf:
+                flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
+                offset += t.numel()
 
             # Record the flat buffer is used by the collective stream.
             flat_buf.record_stream(torch.cuda.ExternalStream(self._coll_stream.ptr))
-
-            print(f"before {flat_buf}")
 
             self._comm.allReduce(
                 self.nccl_util.get_tensor_ptr(flat_buf),
@@ -318,16 +308,10 @@ class _NcclGroup(Communicator):
                 self._coll_stream.ptr,
             )
 
-            print(f"after {flat_buf}")
-
-            # Record the flat buffer is used by the copy stream.
-            flat_buf.record_stream(torch.cuda.ExternalStream(self._copy_stream.ptr))
-
-            with self._copy_stream:
-                offset = 0
-                for t in recv_buf:
-                    t.copy_(flat_buf[offset:offset + t.numel()].view(t.shape))
-                    offset += t.numel()
+            offset = 0
+            for t in recv_buf:
+                t.copy_(flat_buf[offset:offset + t.numel()].view(t.shape))
+                offset += t.numel()
 
         # Buffer values are undefined if NCCL ops are aborted. Therefore, we
         # need to synchronize here and check that the channel is still open to
@@ -355,10 +339,6 @@ class _NcclGroup(Communicator):
     def coll_stream(self) -> Optional["cp.cuda.ExternalStream"]:
         return self._coll_stream
     
-    @property
-    def copy_stream(self) -> Optional["cp.cuda.ExternalStream"]:
-        return self._copy_stream
-
     def destroy(self) -> None:
         """
         Destroy the NCCL group.
