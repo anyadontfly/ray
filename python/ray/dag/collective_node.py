@@ -172,8 +172,9 @@ class _CollectiveOperation(_NcclOperation):
                 flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
                 offset += t.numel()
 
-            communicator.allreduce(flat_buf, flat_buf, self._op)
-
+            event = communicator.allreduce(flat_buf, flat_buf, self._op)
+            event.synchronize()
+            
             offset = 0
             for t in recv_buf:
                 t.copy_(flat_buf[offset:offset + t.numel()].view(t.shape))

@@ -259,7 +259,8 @@ class _NcclGroup(Communicator):
         send_buf: "torch.Tensor",
         recv_buf: "torch.Tensor",
         op: ReduceOp = ReduceOp.SUM,
-    ):
+        requires_copy: bool = False,
+    ) -> Optional["torch.cuda.Event"]:
         import torch
 
         if self._closed:
@@ -282,6 +283,9 @@ class _NcclGroup(Communicator):
             op.value,
             self._coll_stream.ptr,
         )
+        if requires_copy:
+            allreduce_event = torch.cuda.Event()
+            allreduce_event.record(torch.cuda.ExternalStream(self._coll_stream.ptr))
 
         # Buffer values are undefined if NCCL ops are aborted. Therefore, we
         # need to synchronize here and check that the channel is still open to
@@ -296,6 +300,9 @@ class _NcclGroup(Communicator):
                 "There may be a dtype mismatch between input tensors from "
                 "different ranks."
             )
+        
+        if requires_copy:
+            return allreduce_event
 
     @property
     def recv_stream(self) -> Optional["cp.cuda.ExternalStream"]:
