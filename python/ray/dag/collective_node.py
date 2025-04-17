@@ -162,21 +162,21 @@ class _CollectiveOperation(_NcclOperation):
 
             if len(set((t.dtype, t.device) for t in send_buf)) != 1:
                 raise ValueError("Expected tensors to have same dtype")
-
+            
             total_size = sum(g.numel() for g in send_buf)
-            flat_send_buf = torch.empty(total_size, dtype=send_buf[0].dtype, device=send_buf[0].device)
+            flat_buf = torch.empty(total_size, dtype=send_buf[0].dtype, device=send_buf[0].device)
             recv_buf = tuple(torch.empty_like(t) for t in send_buf)
 
             offset = 0
             for t in send_buf:
-                flat_send_buf[offset:offset + t.numel()].copy_(t.view(-1))
+                flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
                 offset += t.numel()
 
-            communicator.allreduce(flat_send_buf, flat_send_buf, self._op)
+            communicator.allreduce(flat_buf, flat_buf, self._op)
 
             offset = 0
             for t in recv_buf:
-                t.copy_(flat_send_buf[offset:offset + t.numel()].view(t.shape))
+                t.copy_(flat_buf[offset:offset + t.numel()].view(t.shape))
                 offset += t.numel()
             
         return recv_buf
