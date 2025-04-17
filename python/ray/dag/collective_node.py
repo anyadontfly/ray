@@ -172,7 +172,7 @@ class _CollectiveOperation(_NcclOperation):
                 flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
                 offset += t.numel()
 
-            event = communicator.allreduce(flat_buf, flat_buf, self._op)
+            event = communicator.allreduce(flat_buf, flat_buf, self._op, requires_copy=True)
             event.synchronize()
             
             offset = 0
