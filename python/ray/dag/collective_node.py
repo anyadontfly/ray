@@ -172,13 +172,14 @@ class _CollectiveOperation(_NcclOperation):
                 flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
                 offset += t.numel()
 
-            event = communicator.allreduce(flat_buf, flat_buf, self._op, requires_copy=True)
-            event.synchronize()
-            
-            offset = 0
-            for t in recv_buf:
-                t.copy_(flat_buf[offset:offset + t.numel()].view(t.shape))
-                offset += t.numel()
+            communicator.allreduce(flat_buf, flat_buf, self._op)
+
+            import cupy
+            with torch.cuda.stream(torch.cuda.ExternalStream(cupy.cuda.get_current_stream().ptr)):
+                offset = 0
+                for t in recv_buf:
+                    t.copy_(flat_buf[offset:offset + t.numel()].view(t.shape))
+                    offset += t.numel()
             
         return recv_buf
 
