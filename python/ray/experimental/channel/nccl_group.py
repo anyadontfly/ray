@@ -6,6 +6,7 @@ import ray
 from ray.exceptions import RayChannelError
 from ray.experimental.channel.communicator import Communicator, TorchTensorAllocator
 from ray.experimental.util.types import ReduceOp
+from ray.experimental.channel import ChannelContext
 
 if TYPE_CHECKING:
     import cupy as cp
@@ -105,6 +106,8 @@ class _NcclGroup(Communicator):
             if use_communication_streams:
                 import torch
 
+                self._coll_torch_stream = torch.cuda.Stream()
+
                 self._send_stream = cp.cuda.ExternalStream(
                     torch.cuda.Stream().cuda_stream, device_id=device.index
                 )
@@ -112,13 +115,15 @@ class _NcclGroup(Communicator):
                     torch.cuda.Stream().cuda_stream, device_id=device.index
                 )
                 self._coll_stream = cp.cuda.ExternalStream(
-                    torch.cuda.Stream().cuda_stream, device_id=device.index
+                    self._coll_torch_stream.cuda_stream, device_id=device.index
                 )
             else:
                 stream = cp.cuda.ExternalStream(cuda_stream, device_id=device.index)
                 self._send_stream = stream
                 self._recv_stream = stream
                 self._coll_stream = stream
+
+                self._coll_torch_stream = None
 
         self._closed = False
 
@@ -261,6 +266,7 @@ class _NcclGroup(Communicator):
         op: ReduceOp = ReduceOp.SUM,
     ) -> Optional["torch.cuda.Event"]:
         import torch
+        import cupy
 
         if self._closed:
             raise RayChannelError("NCCL group has been destroyed.")
@@ -274,6 +280,12 @@ class _NcclGroup(Communicator):
         # Record the buffer is used by the collective stream.
         send_buf.record_stream(torch.cuda.ExternalStream(self._coll_stream.ptr))
 
+        ctx = ChannelContext.get_current()
+        
+        event_ar_op_start = cupy.cuda.Event()
+        event_ar_op_start.record(self._coll_stream)
+        ctx._cupy_events["ar_op"].append(event_ar_op_start)
+        
         self._comm.allReduce(
             self.nccl_util.get_tensor_ptr(send_buf),
             self.nccl_util.get_tensor_ptr(recv_buf),
@@ -282,6 +294,10 @@ class _NcclGroup(Communicator):
             op.value,
             self._coll_stream.ptr,
         )
+
+        event_ar_op_end = cupy.cuda.Event()
+        event_ar_op_end.record(self._coll_stream)
+        ctx._cupy_events["ar_op"].append(event_ar_op_end)
 
         # Buffer values are undefined if NCCL ops are aborted. Therefore, we
         # need to synchronize here and check that the channel is still open to

@@ -220,6 +220,7 @@ def do_exec_tasks(
             nvtx_profile.enable()
 
         done = False
+        time_start = time.perf_counter()
         while True:
             if done:
                 break
@@ -229,6 +230,9 @@ def do_exec_tasks(
                 )
                 if done:
                     break
+
+        time_end = time.perf_counter()
+        print(f"total cpu time: {(time_end - time_start)*1000}")
 
         if RAY_CGRAPH_ENABLE_NVTX_PROFILING:
             nvtx_profile.disable()
@@ -658,9 +662,13 @@ class ExecutableTask:
         Returns:
             True if the next operation should not be executed; otherwise, False.
         """
+        time_start = time.perf_counter()
         with _device_context_manager():
             with self.stream:
-                return self.exec_operation(class_handle, overlap_gpu_communication)
+                res = self.exec_operation(class_handle, overlap_gpu_communication)
+                time_end = time.perf_counter()
+                print(f"{self.method_name} cpu time: {(time_end - time_start)*1000}")
+                return res
 
     def exec_operation(
         self,
