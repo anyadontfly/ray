@@ -1,5 +1,4 @@
 from typing import Any, Dict, List, Union, Tuple, Optional, TYPE_CHECKING
-import time
 
 if TYPE_CHECKING:
     import torch
@@ -144,18 +143,11 @@ class _CollectiveOperation(_NcclOperation):
         """
         import torch
         
-        ctx = ChannelContext.get_current()
 
         if not (isinstance(send_buf, torch.Tensor) or (isinstance(send_buf, tuple) and all(isinstance(t, torch.Tensor) for t in send_buf))):
             raise ValueError("Expected a torch tensor")
         communicator = self.get_communicator()
         coll_stream = communicator._coll_torch_stream if communicator._coll_torch_stream is not None else torch.cuda.current_stream()
-
-        print(f"ar stream: {coll_stream}")
-        
-        event_ar_start = torch.cuda.Event(enable_timing=True)
-        event_ar_start.record(coll_stream)
-        ctx._cuda_events["ar"].append(event_ar_start)
 
         if isinstance(send_buf, torch.Tensor) or len(send_buf) == 1:
             if isinstance(send_buf, tuple):
@@ -190,10 +182,6 @@ class _CollectiveOperation(_NcclOperation):
                     t.copy_(flat_buf[offset:offset + t.numel()].view(t.shape))
                     offset += t.numel()
         
-        event_ar_end = torch.cuda.Event(enable_timing=True)
-        event_ar_end.record(coll_stream)
-        ctx._cuda_events["ar"].append(event_ar_end)
-
         return recv_buf
 
 
