@@ -6,7 +6,6 @@ import ray
 from ray.exceptions import RayChannelError
 from ray.experimental.channel.communicator import Communicator, TorchTensorAllocator
 from ray.experimental.util.types import ReduceOp
-from ray.experimental.channel import ChannelContext
 
 if TYPE_CHECKING:
     import cupy as cp
@@ -279,7 +278,6 @@ class _NcclGroup(Communicator):
         # Record the buffer is used by the collective stream.
         send_buf.record_stream(torch.cuda.ExternalStream(self._coll_stream.ptr))
 
-        
         self._comm.allReduce(
             self.nccl_util.get_tensor_ptr(send_buf),
             self.nccl_util.get_tensor_ptr(recv_buf),

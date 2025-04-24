@@ -136,18 +136,29 @@ class _CollectiveOperation(_NcclOperation):
             raise ValueError("Expected a NCCL group")
         return communicator
 
-    def execute(self, send_buf: Union["torch.Tensor", Tuple["torch.Tensor", ...]]) -> Union["torch.Tensor", Tuple["torch.Tensor", ...]]:
+    def execute(
+        self, send_buf: Union["torch.Tensor", Tuple["torch.Tensor", ...]]
+    ) -> Union["torch.Tensor", Tuple["torch.Tensor", ...]]:
         """
         Call the collective operation on the input tensor(s). Output tensor(s) is
         allocated and returned.
         """
         import torch
-        
 
-        if not (isinstance(send_buf, torch.Tensor) or (isinstance(send_buf, tuple) and all(isinstance(t, torch.Tensor) for t in send_buf))):
+        if not (
+            isinstance(send_buf, torch.Tensor)
+            or (
+                isinstance(send_buf, tuple)
+                and all(isinstance(t, torch.Tensor) for t in send_buf)
+            )
+        ):
             raise ValueError("Expected a torch tensor")
         communicator = self.get_communicator()
-        coll_stream = communicator._coll_torch_stream if communicator._coll_torch_stream is not None else torch.cuda.current_stream()
+        coll_stream = (
+            communicator._coll_torch_stream
+            if communicator._coll_torch_stream is not None
+            else torch.cuda.current_stream()
+        )
 
         if isinstance(send_buf, torch.Tensor) or len(send_buf) == 1:
             if isinstance(send_buf, tuple):
@@ -160,29 +171,21 @@ class _CollectiveOperation(_NcclOperation):
                 recv_buf = (recv_buf,)
         else:
             if len(set(t.device for t in send_buf)) != 1:
-                raise ValueError(f"Expected tensors on same device")
+                raise ValueError("Expected tensors on same device")
 
             if len(set((t.dtype, t.device) for t in send_buf)) != 1:
                 raise ValueError("Expected tensors to have same dtype")
-            
-            total_size = sum(g.numel() for g in send_buf)
-            flat_buf = torch.empty(total_size, dtype=send_buf[0].dtype, device=send_buf[0].device)
+
             recv_buf = tuple(torch.empty_like(t) for t in send_buf)
 
             with torch.cuda.stream(coll_stream):
-                offset = 0
-                for t in send_buf:
-                    flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
-                    offset += t.numel()
+                flat_buf = torch.nn.utils.parameters_to_vector(send_buf)
 
             communicator.allreduce(flat_buf, flat_buf, self._op)
 
             with torch.cuda.stream(coll_stream):
-                offset = 0
-                for t in recv_buf:
-                    t.copy_(flat_buf[offset:offset + t.numel()].view(t.shape))
-                    offset += t.numel()
-        
+                torch.nn.utils.vector_to_parameters(flat_buf, recv_buf)
+
         return recv_buf
 
 

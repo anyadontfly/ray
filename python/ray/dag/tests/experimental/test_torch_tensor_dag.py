@@ -75,8 +75,10 @@ class TorchTensorWorker:
     def recv_tuple(self, tup):
         assert tup[0].device == self.device
         assert tup[1].device == self.device
-        return ((tup[0][0].item(), tup[0].shape, tup[0].dtype),
-                (tup[1][0].item(), tup[1].shape, tup[1].dtype))
+        return (
+            (tup[0][0].item(), tup[0].shape, tup[0].dtype),
+            (tup[1][0].item(), tup[1].shape, tup[1].dtype),
+        )
 
     def recv_and_matmul(self, two_d_tensor):
         """
@@ -121,9 +123,15 @@ class TorchTensorWorker:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return t1, t2
 
-    def return_two_tensor_tuple(self, args, i: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        tup = (torch.ones(args[2*i][0], dtype=args[2*i][1], device=self.device) * args[2*i][2],
-                torch.ones(args[2*i+1][0], dtype=args[2*i+1][1], device=self.device) * args[2*i+1][2])
+    def return_two_tensor_tuple(
+        self, args, i: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        tup = (
+            torch.ones(args[2 * i][0], dtype=args[2 * i][1], device=self.device)
+            * args[2 * i][2],
+            torch.ones(args[2 * i + 1][0], dtype=args[2 * i + 1][1], device=self.device)
+            * args[2 * i + 1][2],
+        )
         return tup
 
 
@@ -1328,7 +1336,9 @@ def test_torch_tensor_nccl_all_reduce(ray_start_regular):
 
 @pytest.mark.parametrize("ray_start_regular", [{"num_cpus": 4}], indirect=True)
 @pytest.mark.parametrize("overlap_gpu_communication", [False, True])
-def test_torch_tensor_nccl_all_reduce_two_tensors(ray_start_regular, overlap_gpu_communication):
+def test_torch_tensor_nccl_all_reduce_two_tensors(
+    ray_start_regular, overlap_gpu_communication
+):
     """
     Test basic all-reduce with tuple of tensors.
     """
@@ -1356,19 +1366,24 @@ def test_torch_tensor_nccl_all_reduce_two_tensors(ray_start_regular, overlap_gpu
         ]
         dag = MultiOutputNode(recvs)
 
-    compiled_dag = dag.experimental_compile(_overlap_gpu_communication=overlap_gpu_communication)
+    compiled_dag = dag.experimental_compile(
+        _overlap_gpu_communication=overlap_gpu_communication
+    )
 
     for i in range(3):
         i += 1
         shape = (i * 10,)
         dtype = torch.float16
         ref = compiled_dag.execute(
-            [(shape, dtype, i + idx) for idx in range(2*num_workers)]
+            [(shape, dtype, i + idx) for idx in range(2 * num_workers)]
         )
         result = ray.get(ref)
-        reduced_val_1 = sum(i + idx for idx in range(0, 2*num_workers, 2))
-        reduced_val_2 = sum(i + idx for idx in range(1, 2*num_workers, 2))
-        assert result == [((reduced_val_1, shape, dtype), (reduced_val_2, shape, dtype)) for _ in workers]
+        reduced_val_1 = sum(i + idx for idx in range(0, 2 * num_workers, 2))
+        reduced_val_2 = sum(i + idx for idx in range(1, 2 * num_workers, 2))
+        assert result == [
+            ((reduced_val_1, shape, dtype), (reduced_val_2, shape, dtype))
+            for _ in workers
+        ]
 
 
 @pytest.mark.parametrize("ray_start_regular", [{"num_cpus": 4}], indirect=True)

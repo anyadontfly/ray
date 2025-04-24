@@ -14,9 +14,7 @@ from typing import (
     Optional,
     Tuple,
     Union,
-    DefaultDict,
 )
-from collections import defaultdict
 
 import ray
 import ray.exceptions
@@ -130,8 +128,6 @@ class ChannelContext:
     def __init__(self):
         # Used for the torch.Tensor NCCL transport.
         self.communicators: Dict[str, "Communicator"] = {}
-        self._cuda_events: DefaultDict[str, List["torch.cuda.Event"]] = defaultdict(list)
-        self._cupy_events: DefaultDict[str, List["torch.cuda.Event"]] = defaultdict(list)
 
     @staticmethod
     def get_current() -> "ChannelContext":
@@ -184,10 +180,6 @@ class ChannelContext:
 
     def set_torch_device(self, device: "torch.device"):
         self._torch_device = device
-
-    def conclude_time(self):
-        for event in self._cuda_events:
-            print(f"event: {event} elapsed time: {self._cuda_events[event][0].elapsed_time(self._cuda_events[event][1])}")
 
 
 @PublicAPI(stability="alpha")
