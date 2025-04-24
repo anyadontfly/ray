@@ -169,10 +169,11 @@ class _CollectiveOperation(_NcclOperation):
             flat_buf = torch.empty(total_size, dtype=send_buf[0].dtype, device=send_buf[0].device)
             recv_buf = tuple(torch.empty_like(t) for t in send_buf)
 
-            offset = 0
-            for t in send_buf:
-                flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
-                offset += t.numel()
+            with torch.cuda.stream(coll_stream):
+                offset = 0
+                for t in send_buf:
+                    flat_buf[offset:offset + t.numel()].copy_(t.view(-1))
+                    offset += t.numel()
 
             communicator.allreduce(flat_buf, flat_buf, self._op)
 
