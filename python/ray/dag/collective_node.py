@@ -138,7 +138,7 @@ class _CollectiveOperation(_NcclOperation):
 
     def execute(self, send_buf: Union["torch.Tensor", Tuple["torch.Tensor", ...]]) -> Union["torch.Tensor", Tuple["torch.Tensor", ...]]:
         """
-        Call the collective operation on the input tensor. An output tensor is
+        Call the collective operation on the input tensor(s). Output tensor(s) is
         allocated and returned.
         """
         import torch
