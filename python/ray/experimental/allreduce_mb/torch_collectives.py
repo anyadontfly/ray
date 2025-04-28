@@ -18,8 +18,8 @@ def run(rank, world_size):
     torch.cuda.set_device(rank)
     device = torch.device(f"cuda:{rank}")
     
-    for _ in range(10_000):
-        dist.all_reduce(torch.ones(1_000).to(device), op=dist.ReduceOp.SUM)
+    for _ in range(1):
+        dist.all_reduce(torch.ones(10_000_000).to(device), op=dist.ReduceOp.SUM)
     
     dist.destroy_process_group()
 

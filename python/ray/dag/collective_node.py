@@ -153,12 +153,8 @@ class _CollectiveOperation(_NcclOperation):
             )
         ):
             raise ValueError("Expected a torch tensor")
+        
         communicator = self.get_communicator()
-        coll_stream = (
-            communicator._coll_torch_stream
-            if communicator._coll_torch_stream is not None
-            else torch.cuda.current_stream()
-        )
 
         if isinstance(send_buf, torch.Tensor) or len(send_buf) == 1:
             if isinstance(send_buf, tuple):
@@ -175,9 +171,10 @@ class _CollectiveOperation(_NcclOperation):
 
             if len(set((t.dtype, t.device) for t in send_buf)) != 1:
                 raise ValueError("Expected tensors to have same dtype")
-
+            
             recv_buf = tuple(torch.empty_like(t) for t in send_buf)
-
+            
+            coll_stream = communicator._coll_stream_torch
             with torch.cuda.stream(coll_stream):
                 flat_buf = torch.nn.utils.parameters_to_vector(send_buf)
 

@@ -105,7 +105,7 @@ class _NcclGroup(Communicator):
             if use_communication_streams:
                 import torch
 
-                self._coll_torch_stream = torch.cuda.Stream()
+                self._coll_stream_torch = torch.cuda.Stream()
 
                 self._send_stream = cp.cuda.ExternalStream(
                     torch.cuda.Stream().cuda_stream, device_id=device.index
@@ -114,15 +114,13 @@ class _NcclGroup(Communicator):
                     torch.cuda.Stream().cuda_stream, device_id=device.index
                 )
                 self._coll_stream = cp.cuda.ExternalStream(
-                    self._coll_torch_stream.cuda_stream, device_id=device.index
+                    self._coll_stream_torch.cuda_stream, device_id=device.index
                 )
             else:
                 stream = cp.cuda.ExternalStream(cuda_stream, device_id=device.index)
                 self._send_stream = stream
                 self._recv_stream = stream
                 self._coll_stream = stream
-
-                self._coll_torch_stream = None
 
         self._closed = False
 
