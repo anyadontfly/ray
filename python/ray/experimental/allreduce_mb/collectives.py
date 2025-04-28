@@ -8,7 +8,7 @@ from ray.experimental.collective import allreduce
 @ray.remote(num_gpus=1)
 class Actor:
     def __init__(self):
-        self.deviece = "cuda:0"
+        self.device = "cuda:0"
 
     def start_trace(self, _):
         torch.cuda.profiler.start()
@@ -17,7 +17,7 @@ class Actor:
     def send_reduce(self, num_tensors):
         tensors = []
         for _ in range(num_tensors):
-            tensors.append(torch.ones(1000).to(self.deviece))
+            tensors.append(torch.ones(1000, device=self.device))
         return tuple(tensors)
     
     def end_trace(self, *args):
@@ -25,7 +25,7 @@ class Actor:
         return 1
     
 
-bucket_size = 100  # in number of tensors, number of params is bucket_size * 1000
+bucket_size = 10  # in number of tensors, number of params is bucket_size * 1000
 num_tensors = 10_000  # number of tensors need to time 1000
 actors = [Actor.options(num_gpus=1).remote() for _ in range(2)]
 
