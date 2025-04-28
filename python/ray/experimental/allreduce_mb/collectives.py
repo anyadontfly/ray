@@ -7,22 +7,17 @@ from ray.experimental.collective import allreduce
 
 @ray.remote(num_gpus=1)
 class Actor:
-    def __init__(self, pool_size):
-        torch.cuda.profiler.start()
+    def __init__(self):
         self.deviece = "cuda:0"
-        self.comm_tensors = [
-            torch.randn(1000).to(self.deviece) for _ in range(pool_size)
-        ]
-        self.offset = 0
 
     def start_trace(self, _):
+        torch.cuda.profiler.start()
         return 1
 
     def send_reduce(self, num_tensors):
-        tensors = self.comm_tensors[self.offset : self.offset + num_tensors]
-        self.offset += num_tensors
-        if self.offset >= len(self.comm_tensors):
-            self.offset = 0
+        tensors = []
+        for _ in range(num_tensors):
+            tensors.append(torch.ones(1000).to(self.deviece))
         return tuple(tensors)
     
     def end_trace(self, *args):
@@ -30,23 +25,22 @@ class Actor:
         return 1
     
 
-bucket_sizes = [100]  # in number of tensors
-num_tensors = 10_000
-actors = [Actor.options(num_gpus=1).remote(num_tensors) for _ in range(2)]
+bucket_size = 100  # in number of tensors, number of params is bucket_size * 1000
+num_tensors = 10_000  # number of tensors need to time 1000
+actors = [Actor.options(num_gpus=1).remote() for _ in range(2)]
 
-for bucket_size in bucket_sizes:
 
-    with InputNode() as inp:
-        res = []
-        start_traces = [actor.start_trace.bind(inp) for actor in actors]
-        for _ in range(num_tensors // bucket_size):
-            sends = [actor.send_reduce.bind(inp) for actor in actors]
-            res += allreduce.bind(sends)
-        end_traces = [actor.end_trace.bind(start) for actor, start in zip(actors, start_traces)]
-        dag = MultiOutputNode(end_traces+res)
+with InputNode() as inp:
+    res = []
+    start_traces = [actor.start_trace.bind(inp) for actor in actors]
+    for _ in range(num_tensors // bucket_size):
+        sends = [actor.send_reduce.bind(inp) for actor in actors]
+        res += allreduce.bind(sends)
+    end_traces = [actor.end_trace.bind(start) for actor, start in zip(actors, start_traces)]
+    dag = MultiOutputNode(end_traces+res)
 
-    compiled_dag = dag.experimental_compile(_overlap_gpu_communication=True)
+compiled_dag = dag.experimental_compile(_overlap_gpu_communication=True)
 
-    iter = 10
-    for _ in range(iter):
-        times = ray.get(compiled_dag.execute(bucket_size))
+iter = 10
+for _ in range(iter):
+    times = ray.get(compiled_dag.execute(bucket_size))
