@@ -15,17 +15,18 @@ class Actor:
         return 1
 
     def send_reduce(self, num_tensors):
-        tensors = []
-        for _ in range(num_tensors):
-            tensors.append(torch.ones(1000, device=self.device))
-        return tuple(tensors)
+        # tensors = []
+        # for _ in range(num_tensors):
+        #     tensors.append(torch.ones(1000, device=self.device))
+        # return tuple(tensors)
+        return torch.ones(1000*num_tensors, device=self.device)
     
     def end_trace(self, *args):
         torch.cuda.profiler.stop()
         return 1
     
 
-bucket_size = 10  # in number of tensors, number of params is bucket_size * 1000
+bucket_size = 10_000  # in number of tensors, number of params is bucket_size * 1000
 num_tensors = 10_000  # number of tensors need to time 1000
 actors = [Actor.options(num_gpus=1).remote() for _ in range(2)]
 
