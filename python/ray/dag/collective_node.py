@@ -174,13 +174,22 @@ class _CollectiveOperation(_NcclOperation):
             
             recv_buf = tuple(torch.empty_like(t) for t in send_buf)
             
-            coll_stream = communicator._coll_stream_torch
-            with torch.cuda.stream(coll_stream):
+            coll_stream = torch.cuda.ExternalStream(communicator._coll_stream.ptr)
+            copy_stream = torch.cuda.ExternalStream(communicator._copy_stream.ptr)
+            copy_to_flatbuf_event = torch.cuda.Event()
+
+            with torch.cuda.stream(copy_stream):
                 flat_buf = torch.nn.utils.parameters_to_vector(send_buf)
-
-            communicator.allreduce(flat_buf, flat_buf, self._op)
+                copy_to_flatbuf_event.record(copy_stream)
 
             with torch.cuda.stream(coll_stream):
+                coll_stream.wait_event(copy_to_flatbuf_event)
+
+            allreduce_event = communicator.allreduce(flat_buf, flat_buf, self._op, get_event=True)
+
+            with torch.cuda.stream(copy_stream):
+                if allreduce_event is not None:
+                    copy_stream.wait_event(allreduce_event)
                 torch.nn.utils.vector_to_parameters(flat_buf, recv_buf)
 
         return recv_buf

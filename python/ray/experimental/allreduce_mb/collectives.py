@@ -13,40 +13,57 @@ torch.cuda.profiler.start()
 class Actor:
     def __init__(self):
         self.device = "cuda:0"
-
-    def start_trace(self, _):
         torch.cuda.profiler.start()
-        return 1
 
     def send_reduce(self, num_tensors):
-        return tuple([torch.ones(1000, device=self.device) for _ in range(num_tensors)])
         # return torch.ones(1000*num_tensors, device=self.device)
+        return tuple([torch.ones(1000, device=self.device) for _ in range(num_tensors)])
     
-    def end_trace(self, *args):
+    def recv_reduce(self, _):
+        return 1
+    
+    def end_trace(self, _):
         torch.cuda.profiler.stop()
         return 1
     
 
-bucket_size = 1000  # in number of tensors, number of params is bucket_size * 1000
-num_tensors = 10_000  # number of tensors need to time 1000
 actors = [Actor.options(num_gpus=1).remote() for _ in range(2)]
 
+bucket_size = 1000
+total_num_tensors = 10_000
+num_allreduces_per_dag = 10
+num_iters = 10
 
 with InputNode() as inp:
-    res = []
-    start_traces = [actor.start_trace.bind(inp) for actor in actors]
-    for _ in range(num_tensors // bucket_size):
+    lst = []
+    for _ in range(num_allreduces_per_dag):
         sends = [actor.send_reduce.bind(inp) for actor in actors]
-        res += allreduce.bind(sends)
-    end_traces = [actor.end_trace.bind(start) for actor, start in zip(actors, start_traces)]
-    dag = MultiOutputNode(end_traces+res)
+        results = allreduce.bind(sends)
+        recvs = [actor.recv_reduce.bind(res) for actor, res in zip(actors, results)]
+        lst += recvs
+    ends = [actors[0].end_trace.bind(lst[0]), actors[1].end_trace.bind(lst[1])]
+    dag = MultiOutputNode(lst+ends)
 
-t1 = time.perf_counter()
+
+TIMING = False
+
+if TIMING:
+    t1 = time.perf_counter()
 compiled_dag = dag.experimental_compile(_overlap_gpu_communication=True)
-t2 = time.perf_counter()
-ray.get(compiled_dag.execute(bucket_size))
-t3 = time.perf_counter()
-print(f"Compilation time: {t2 - t1:.4f} seconds")
-print(f"Execution time: {t3 - t2:.4f} seconds")
+if TIMING:
+    t2 = time.perf_counter()
+    print(f"Compilation time: {t2 - t1:.4f} seconds")
+for _ in range(num_iters):
+    if TIMING:
+        time_execution = 0
+    for i in range(total_num_tensors // bucket_size // num_allreduces_per_dag):
+        if TIMING:
+            t3 = time.perf_counter()
+        ray.get(compiled_dag.execute(bucket_size))
+        if TIMING:
+            t4 = time.perf_counter()
+            time_execution += t4 - t3
+    if TIMING:
+        print(f"Total execution time: {time_execution:.4f} seconds")
 
 torch.cuda.profiler.stop()

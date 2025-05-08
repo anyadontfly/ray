@@ -105,8 +105,6 @@ class _NcclGroup(Communicator):
             if use_communication_streams:
                 import torch
 
-                self._coll_stream_torch = torch.cuda.Stream()
-
                 self._send_stream = cp.cuda.ExternalStream(
                     torch.cuda.Stream().cuda_stream, device_id=device.index
                 )
@@ -114,13 +112,17 @@ class _NcclGroup(Communicator):
                     torch.cuda.Stream().cuda_stream, device_id=device.index
                 )
                 self._coll_stream = cp.cuda.ExternalStream(
-                    self._coll_stream_torch.cuda_stream, device_id=device.index
+                    torch.cuda.Stream().cuda_stream, device_id=device.index
+                )
+                self._copy_stream = cp.cuda.ExternalStream(
+                    torch.cuda.Stream().cuda_stream, device_id=device.index
                 )
             else:
                 stream = cp.cuda.ExternalStream(cuda_stream, device_id=device.index)
                 self._send_stream = stream
                 self._recv_stream = stream
                 self._coll_stream = stream
+                self._copy_stream = stream
 
         self._closed = False
 
@@ -261,6 +263,7 @@ class _NcclGroup(Communicator):
         send_buf: "torch.Tensor",
         recv_buf: "torch.Tensor",
         op: ReduceOp = ReduceOp.SUM,
+        get_event: bool = False,
     ) -> Optional["torch.cuda.Event"]:
         import torch
 
@@ -273,6 +276,9 @@ class _NcclGroup(Communicator):
             "If you see this error, please file an issue at Ray repository."
         )
 
+        if get_event:
+            allreduce_event = torch.cuda.Event()
+
         # Record the buffer is used by the collective stream.
         send_buf.record_stream(torch.cuda.ExternalStream(self._coll_stream.ptr))
 
@@ -284,6 +290,9 @@ class _NcclGroup(Communicator):
             op.value,
             self._coll_stream.ptr,
         )
+
+        if get_event:
+            allreduce_event.record(torch.cuda.ExternalStream(self._coll_stream.ptr))
 
         # Buffer values are undefined if NCCL ops are aborted. Therefore, we
         # need to synchronize here and check that the channel is still open to
@@ -298,6 +307,10 @@ class _NcclGroup(Communicator):
                 "There may be a dtype mismatch between input tensors from "
                 "different ranks."
             )
+        
+        if get_event:
+            return allreduce_event
+        return None
 
     @property
     def recv_stream(self) -> Optional["cp.cuda.ExternalStream"]:
