@@ -17,7 +17,7 @@ class Actor:
 
     def send_reduce(self, num_tensors):
         # return torch.ones(1000*num_tensors, device=self.device)
-        return tuple([torch.ones(1000, device=self.device) for _ in range(num_tensors)])
+        return tuple([torch.ones(10000, device=self.device) for _ in range(num_tensors)])
     
     def recv_reduce(self, _):
         return 1
@@ -29,9 +29,9 @@ class Actor:
 
 actors = [Actor.options(num_gpus=1).remote() for _ in range(2)]
 
-bucket_size = 1000
-total_num_tensors = 10_000
-num_allreduces_per_dag = 10
+bucket_size = 100
+total_num_tensors = 10000
+num_allreduces_per_dag = 100
 num_iters = 10
 
 with InputNode() as inp:
