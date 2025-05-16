@@ -71,7 +71,7 @@ class _SerializationContext:
         self.intra_process_channel_buffers.pop(channel_id, None)
         self.channel_id_to_num_readers.pop(channel_id, None)
 
-    def add_gpu_future(self, fut_id: int, fut: "GPUFuture") -> None:
+    def add_gpu_future(self, fut_id: str, fut: "GPUFuture") -> None:
         """
         Cache the GPU future.
 

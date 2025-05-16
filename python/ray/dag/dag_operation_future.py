@@ -23,7 +23,7 @@ class GPUFuture:
     """
 
     def __init__(
-        self, buf: Any, fut_id: int, stream: Optional["cp.cuda.Stream"] = None
+        self, buf: Any, fut_id: str, stream: Optional["cp.cuda.Stream"] = None
     ):
         """
         Initialize a GPU future on the given stream.

@@ -2,6 +2,7 @@ import logging
 from typing import List, Optional, Union
 
 import ray
+from ray.dag.class_node import IS_CLASS_METHOD_OUTPUT_KEY, ClassMethodNode
 from ray.dag.collective_node import CollectiveOutputNode, _CollectiveOperation
 from ray.dag.constants import (
     BIND_INDEX_KEY,
@@ -23,7 +24,7 @@ class AllReduceWrapper:
 
     def bind(
         self,
-        input_nodes: List["ray.dag.DAGNode"],
+        input_nodes: Union[List["ray.dag.DAGNode"], List[List["ray.dag.DAGNode"]]],
         op: ReduceOp = ReduceOp.SUM,
         transport: Optional[Union[str, Communicator]] = None,
     ) -> List[CollectiveOutputNode]:
@@ -57,14 +58,20 @@ class AllReduceWrapper:
         collective_output_nodes: List[CollectiveOutputNode] = []
 
         for input_node in input_nodes:
-            actor_handle: Optional[
-                "ray.actor.ActorHandle"
-            ] = input_node._get_actor_handle()
+            if isinstance(input_node, list):
+                # TODO: assert all input nodes have same actor handle
+                actor_handle: Optional[
+                    "ray.actor.ActorHandle"
+                ] = input_node[0]._get_actor_handle()
+            else:
+                actor_handle: Optional[
+                    "ray.actor.ActorHandle"
+                ] = input_node._get_actor_handle()
             if actor_handle is None:
                 raise ValueError("Expected an actor handle from the input node")
             collective_output_node = CollectiveOutputNode(
                 method_name=f"allreduce.{op}",
-                method_args=(input_node,),
+                method_args=tuple(input_node) if isinstance(input_node, list) else (input_node,),
                 method_kwargs=dict(),
                 method_options=dict(),
                 other_args_to_resolve={
@@ -74,7 +81,25 @@ class AllReduceWrapper:
                 },
             )
             actor_handle._ray_dag_bind_index += 1
-            collective_output_nodes.append(collective_output_node)
+
+            if isinstance(input_node, list):
+                output_nodes: List[ClassMethodNode] = []
+                for i in range(len(input_node)):
+                    output_node = ClassMethodNode(
+                        f"return_idx_{i}",
+                        (collective_output_node, i),
+                        dict(),
+                        dict(),
+                        {
+                            BIND_INDEX_KEY: collective_output_node._get_bind_index(),
+                            IS_CLASS_METHOD_OUTPUT_KEY: True,
+                            PARENT_CLASS_NODE_KEY: actor_handle,
+                        },
+                    )
+                    output_nodes.append(output_node)
+                collective_output_nodes.append(output_nodes)
+            else:
+                collective_output_nodes.append(collective_output_node)
 
         return collective_output_nodes
 

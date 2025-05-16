@@ -741,7 +741,10 @@ class ExecutableTask:
         # if overlapping GPU communication.
         if self.output_writer is not None:
             if overlap_gpu_communication and self.nccl_op is not None:
-                output_val = GPUFuture(output_val, self.task_idx)
+                if len(output_val) > 1:
+                    output_val = tuple(GPUFuture(val, str(self.task_idx)+f".{i}") for i, val in enumerate(output_val))
+                else:
+                    output_val = GPUFuture(output_val, str(self.task_idx))
 
             try:
                 self.output_writer.write(output_val)
