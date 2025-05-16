@@ -307,7 +307,7 @@ class _NcclGroup(Communicator):
                 "There may be a dtype mismatch between input tensors from "
                 "different ranks."
             )
-        
+
         if get_event:
             return allreduce_event
         return None

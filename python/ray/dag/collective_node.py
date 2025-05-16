@@ -42,22 +42,27 @@ class _CollectiveOperation(_NcclOperation):
 
         if len(input_nodes) == 0:
             raise ValueError("Expected input nodes for a collective operation")
-        
+
         if isinstance(input_nodes[0], list):
             assert all(isinstance(input_node, list) for input_node in input_nodes)
             if len(set(len(input_node) for input_node in input_nodes)) != 1:
                 raise ValueError(
-                    "Expected same number of nodes bound from all actors to be of the same length"
+                    "Expected same number of nodes bound from all actors for a collective operation"
                 )
-            # TODO: check unique input nodes for each actor
+            if not all(
+                len(set(input_node)) == len(input_node) for input_node in input_nodes
+            ):
+                raise ValueError(
+                    "Expected unique input nodes for each actor for a collective operation"
+                )
             self.nodes_per_actor = len(input_nodes[0])
 
         self._actor_handles: List["ray.actor.ActorHandle"] = []
-        for input_node in input_nodes:
-            if isinstance(input_node, list):
-                actor_handle = input_node[0]._get_actor_handle()
+        for input_node_or_nodes in input_nodes:
+            if isinstance(input_node_or_nodes, list):
+                actor_handle = input_node_or_nodes[0]._get_actor_handle()
             else:
-                actor_handle = input_node._get_actor_handle()
+                actor_handle = input_node_or_nodes._get_actor_handle()
             if actor_handle is None:
                 raise ValueError("Expected an actor handle from the input node")
             self._actor_handles.append(actor_handle)
@@ -147,7 +152,7 @@ class _CollectiveOperation(_NcclOperation):
         return communicator
 
     def execute(
-        self, *send_buf
+        self, *send_buf: Union["torch.Tensor", Tuple["torch.Tensor", ...]]
     ) -> Union["torch.Tensor", Tuple["torch.Tensor", ...]]:
         """
         Call the collective operation on the input tensor(s). Output tensor(s) is
@@ -155,10 +160,14 @@ class _CollectiveOperation(_NcclOperation):
         """
         import torch
 
-        if not (isinstance(send_buf, torch.Tensor) or (isinstance(send_buf, tuple) and all(isinstance(t, torch.Tensor) for t in send_buf))):
-            # raise ValueError("Expected a torch tensor")
-            # TODO: better error message
-            raise ValueError(type(send_buf))
+        if not (
+            isinstance(send_buf, torch.Tensor)
+            or (
+                isinstance(send_buf, tuple)
+                and all(isinstance(t, torch.Tensor) for t in send_buf)
+            )
+        ):
+            raise ValueError("Expected a torch tensor or a tuple of torch tensors")
 
         communicator = self.get_communicator()
 
@@ -171,9 +180,9 @@ class _CollectiveOperation(_NcclOperation):
 
             if len(set((t.dtype, t.device) for t in send_buf)) != 1:
                 raise ValueError("Expected tensors to have same dtype")
-            
+
             recv_buf = tuple(torch.empty_like(t) for t in send_buf)
-            
+
             coll_stream = torch.cuda.ExternalStream(communicator._coll_stream.ptr)
             copy_stream = torch.cuda.ExternalStream(communicator._copy_stream.ptr)
             copy_to_flatbuf_event = torch.cuda.Event()
@@ -185,7 +194,9 @@ class _CollectiveOperation(_NcclOperation):
             with torch.cuda.stream(coll_stream):
                 coll_stream.wait_event(copy_to_flatbuf_event)
 
-            allreduce_event = communicator.allreduce(flat_buf, flat_buf, self._op, get_event=True)
+            allreduce_event = communicator.allreduce(
+                flat_buf, flat_buf, self._op, get_event=True
+            )
 
             with torch.cuda.stream(copy_stream):
                 if allreduce_event is not None:
@@ -217,14 +228,8 @@ class CollectiveOutputNode(ClassMethodNode):
             other_args_to_resolve,
         )
 
-        # Parse the input node.
-        # if not (
-        #     isinstance(method_args, tuple)
-        #     and len(method_args) == 1
-        #     and isinstance(method_args[0], DAGNode)
-        # ):
-        #     raise ValueError("Expected a single input node")
-        self._input_node = method_args
+        # Parse the input nodes.
+        self._input_nodes = method_args
         # Parse the collective operation.
         self._collective_op: _CollectiveOperation = other_args_to_resolve.get(
             COLLECTIVE_OPERATION_KEY, None

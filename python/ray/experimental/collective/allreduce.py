@@ -57,21 +57,32 @@ class AllReduceWrapper:
         collective_op = _CollectiveOperation(input_nodes, op, transport)
         collective_output_nodes: List[CollectiveOutputNode] = []
 
-        for input_node in input_nodes:
-            if isinstance(input_node, list):
-                # TODO: assert all input nodes have same actor handle
-                actor_handle: Optional[
-                    "ray.actor.ActorHandle"
-                ] = input_node[0]._get_actor_handle()
+        for input_node_or_nodes in input_nodes:
+            if isinstance(input_node_or_nodes, list):
+                # Check that all input nodes are from the same actor.
+                assert (
+                    len(
+                        set(
+                            input_node._get_actor_handle()
+                            for input_node in input_node_or_nodes
+                        )
+                    )
+                    == 1
+                )
+                actor_handle: Optional["ray.actor.ActorHandle"] = input_node_or_nodes[
+                    0
+                ]._get_actor_handle()
             else:
                 actor_handle: Optional[
                     "ray.actor.ActorHandle"
-                ] = input_node._get_actor_handle()
+                ] = input_node_or_nodes._get_actor_handle()
             if actor_handle is None:
                 raise ValueError("Expected an actor handle from the input node")
             collective_output_node = CollectiveOutputNode(
                 method_name=f"allreduce.{op}",
-                method_args=tuple(input_node) if isinstance(input_node, list) else (input_node,),
+                method_args=tuple(input_node_or_nodes)
+                if isinstance(input_node_or_nodes, list)
+                else (input_node_or_nodes,),
                 method_kwargs=dict(),
                 method_options=dict(),
                 other_args_to_resolve={
@@ -82,9 +93,9 @@ class AllReduceWrapper:
             )
             actor_handle._ray_dag_bind_index += 1
 
-            if isinstance(input_node, list):
+            if isinstance(input_node_or_nodes, list):
                 output_nodes: List[ClassMethodNode] = []
-                for i in range(len(input_node)):
+                for i in range(len(input_node_or_nodes)):
                     output_node = ClassMethodNode(
                         f"return_idx_{i}",
                         (collective_output_node, i),

@@ -615,8 +615,6 @@ class SynchronousWriter(WriterInterface):
                         f"Expected {len(self._output_channels)} outputs, but got "
                         f"{len(val)} outputs"
                     )
-                
-        # print(f"len {len(self._output_channels)}, val {val}")
 
         for i, channel in enumerate(self._output_channels):
             idx = self._output_idxs[i]
