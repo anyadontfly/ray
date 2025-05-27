@@ -52,6 +52,9 @@ class AllReduceWrapper:
         Returns:
             A list of collective output nodes.
         """
+        if isinstance(input_nodes[0], list) and len(input_nodes[0]) == 1:
+            input_nodes = [input_node[0] for input_node in input_nodes]
+
         if transport is None:
             transport = TorchTensorType.NCCL
         collective_op = _CollectiveOperation(input_nodes, op, transport)

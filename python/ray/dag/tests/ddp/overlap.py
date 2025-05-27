@@ -46,7 +46,8 @@ iterations = args.iterations
 
 with InputNode() as inp:
     comp_res = [inp, inp]
-    ar_res_lst = []
+    ar_res_lst_0 = []
+    ar_res_lst_1 = []
     for _ in range(num_computes // bucket_size):
         comp_lst0 = []
         comp_lst1 = []
@@ -55,10 +56,12 @@ with InputNode() as inp:
             comp_lst0.append(comp_res[0])
             comp_lst1.append(comp_res[1])
         ar_res = allreduce.bind([comp_lst0, comp_lst1])
-        ar_res_lst += [actor.recv_tensor.bind(*comp) for actor, comp in zip(actors, ar_res)]
+        ar_res_lst_0 += ar_res[0]
+        ar_res_lst_1 += ar_res[1]
 
+    end_recv = [actor.recv_tensor.bind(*comm) for actor, comm in zip(actors, [ar_res_lst_0, ar_res_lst_1])]
     end_trace = [actor.end_trace.bind(comp) for actor, comp in zip(actors, comp_res)]
-    dag = MultiOutputNode(ar_res_lst+end_trace)
+    dag = MultiOutputNode(end_recv+end_trace)
 
 compiled_dag = dag.experimental_compile(_overlap_gpu_communication=True)
 ray.get(compiled_dag.execute(None))
