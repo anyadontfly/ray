@@ -20,7 +20,7 @@ torch.cuda.profiler.start()
 class Actor:
     def __init__(self):
         self.device = "cuda:0"
-        self.tensor = torch.randn(1000, 1, device=self.device)
+        self.tensor = torch.ones(1000, 1, device=self.device)
         torch.cuda.profiler.start()
 
     def compute(self, _):
@@ -30,8 +30,9 @@ class Actor:
     def comm(self, _):
         return self.tensor
     
-    def end_trace(sefl, _):
+    def end_trace(self, *args):
         torch.cuda.profiler.stop()
+        # torch.cuda.synchronize()
         return 1
     
     def recv_tensor(self, *args):
