@@ -1,5 +1,7 @@
 from typing import Dict, List, Tuple, Optional, Callable, Any
 
+import time
+
 import torch
 import torch.nn as nn
 
@@ -14,9 +16,14 @@ DEBUG = False
 @ray.remote
 class MLPActor:
     def __init__(self, fn_init_model: Callable, model_args: Any, batch_size: int = 8):
+        torch.cuda.profiler.start()
+
         torch.manual_seed(42)
         torch.set_default_dtype(torch.float16)
         self.device = torch_utils.get_devices()[0]
+
+        torch.cuda.set_device(self.device)
+        torch.cuda.init()
 
         self.model = fn_init_model(self.device, model_args)
         self.criterion = nn.CrossEntropyLoss()
@@ -25,7 +32,7 @@ class MLPActor:
         self.x = torch.randn(batch_size, model_args[0]).to(self.device)
         self.y = torch.randint(0, 10, (batch_size,)).to(self.device)
 
-        self.intermediates = []
+        self.intermediates = {}
 
         if DEBUG:
             self._print_weights()
@@ -34,18 +41,18 @@ class MLPActor:
 
     def forward(self, _) -> None:
         x = self.x
-        for i, layer in enumerate(self.model):
+        for idx, layer in enumerate(self.model):
             pred = layer(x)
-            if i < len(self.model) - 1:
+            if idx < len(self.model) - 1:
                 x = pred.detach().requires_grad_(True)
-                self.intermediates.append((pred, x))
+                self.intermediates[idx] = (pred, x)
             else:
                 x = pred
-                self.intermediates.append((x, x))
+                self.intermediates[idx] = (x, x)
 
     def backward(self, idx: int, _) -> torch.Tensor:
         if idx == len(self.model) - 1:
-            loss = self.criterion(self.intermediates[-1][0], self.y)
+            loss = self.criterion(self.intermediates[len(self.model) - 1][0], self.y)
             loss.backward()
         else:
             pred, pred_detached = self.intermediates[idx]
@@ -69,6 +76,9 @@ class MLPActor:
         if DEBUG:
             self._print_weights()
 
+        torch.cuda.synchronize()
+        torch.cuda.profiler.stop()
+
     def _print_weights(self):
         for name, param in self.model.named_parameters():
             print(f"weight: {name}: {param.data}")
@@ -81,23 +91,26 @@ class MLPActor:
 
 
 def init_mlp_model(device: str, model_args: Any) -> nn.Module:
-    input_size, hidden_size, output_size = model_args
-    model = nn.Sequential(
-        nn.Linear(input_size, hidden_size, bias=False),
-        nn.Linear(hidden_size, output_size, bias=False),
-        nn.Linear(output_size, output_size, bias=False)
-    ).to(device)
-    return model
+    model = []
+    for idx in range(len(model_args) - 1):
+        layer = nn.Linear(model_args[idx], model_args[idx + 1], bias=False).to(device)
+        model.append(layer)
+    return nn.Sequential(*model).to(device)
 
 
 def main():
     num_actors = 2
+    num_iters = 5
+    time_total = 0
 
     # Dimensions for the MLP model
-    model_args = (1, 5, 10)
+    model_args = (2048, 2048, 2048, 2048, 2048, 10)
 
     # Define buckets for allreduce
-    buckets = [[2], [1, 0]]
+    # buckets = [[4], [3], [2], [1], [0]]
+    # buckets = [[4, 3], [2, 1], [0]]
+    # buckets = [[4, 3, 2], [1, 0]]
+    buckets = [[4, 3, 2, 1, 0]]
 
     actors = [
         MLPActor.options(num_gpus=1).remote(init_mlp_model, model_args) for _ in range(num_actors)
@@ -137,6 +150,15 @@ def main():
     compiled_dag = dag.experimental_compile(_overlap_gpu_communication=True)
     ray.get(compiled_dag.execute(None))
 
+    for _ in range(num_iters):
+        start_time = time.perf_counter()
+        ray.get(compiled_dag.execute(None))
+        end_time = time.perf_counter()
+        time_total += (end_time - start_time)
+    print(f"Average time per iteration: {time_total / num_iters:.4f} seconds")
+
 
 if __name__ == "__main__":
+    torch.cuda.profiler.start()
     main()
+    torch.cuda.profiler.stop()
