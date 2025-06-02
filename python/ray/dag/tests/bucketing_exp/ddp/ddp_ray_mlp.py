@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple, Optional, Callable, Any
+from typing import List, Any
 
 import time
 
@@ -15,17 +15,21 @@ DEBUG = False
 
 @ray.remote
 class MLPActor:
-    def __init__(self, fn_init_model: Callable, model_args: Any, batch_size: int = 8):
+    def __init__(self, model_args: Any, batch_size: int = 8):
         torch.cuda.profiler.start()
 
         torch.manual_seed(42)
-        torch.set_default_dtype(torch.float16)
         self.device = torch_utils.get_devices()[0]
 
         torch.cuda.set_device(self.device)
         torch.cuda.init()
 
-        self.model = fn_init_model(self.device, model_args)
+        model = []
+        for idx in range(len(model_args) - 1):
+            layer = nn.Linear(model_args[idx], model_args[idx + 1], bias=False).to(self.device)
+            model.append(layer)
+        self.model = nn.Sequential(*model).to(self.device)
+    
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=1)
 
@@ -90,31 +94,25 @@ class MLPActor:
         print("------------------------")
 
 
-def init_mlp_model(device: str, model_args: Any) -> nn.Module:
-    model = []
-    for idx in range(len(model_args) - 1):
-        layer = nn.Linear(model_args[idx], model_args[idx + 1], bias=False).to(device)
-        model.append(layer)
-    return nn.Sequential(*model).to(device)
+def generate_buckets(bucket_size: int, model_args: Any) -> List[List[int]]:
+    """
+    bucket_size: in number of layers
+    """
+    buckets = []
+    num_layers = len(model_args) - 1
+    for i in range(0, num_layers, bucket_size):
+        bucket = list(range(i, min(i + bucket_size, num_layers)))
+        buckets.append(bucket)
+    # reverse the nested lists and the outer list
+    buckets = [bucket[::-1] for bucket in buckets]
+    return buckets[::-1]
 
-
-def main():
-    num_actors = 2
-    num_iters = 5
+def run_ddp(actors: Any, model_args: Any, bucket_size: int):
+    
+    num_iters = 10
     time_total = 0
 
-    # Dimensions for the MLP model
-    model_args = (2048, 2048, 2048, 2048, 2048, 10)
-
-    # Define buckets for allreduce
-    # buckets = [[4], [3], [2], [1], [0]]
-    # buckets = [[4, 3], [2, 1], [0]]
-    # buckets = [[4, 3, 2], [1, 0]]
-    buckets = [[4, 3, 2, 1, 0]]
-
-    actors = [
-        MLPActor.options(num_gpus=1).remote(init_mlp_model, model_args) for _ in range(num_actors)
-    ]
+    buckets = generate_buckets(bucket_size=bucket_size, model_args=model_args)
 
     with InputNode() as inp:
         # Forward pass
@@ -155,10 +153,22 @@ def main():
         ray.get(compiled_dag.execute(None))
         end_time = time.perf_counter()
         time_total += (end_time - start_time)
-    print(f"Average time per iteration: {time_total / num_iters:.4f} seconds")
+    print(f"Average time per iteration: {time_total / num_iters:.4f} seconds\n")
 
 
 if __name__ == "__main__":
     torch.cuda.profiler.start()
-    main()
+
+    num_actors = 2
+    # Dimensions for the MLP model
+    model_args = tuple([4096] * 48 + [10])
+
+    actors = [
+        MLPActor.options(num_gpus=1).remote(model_args) for _ in range(num_actors)
+    ]
+
+    for bucket_size in [1, 2, 3, 4, 6, 8, 12, 16, 24, 48]:
+    # for bucket_size in [1]:
+        print(f"Running DDP with bucket size: {bucket_size}")
+        run_ddp(actors, model_args, bucket_size)
     torch.cuda.profiler.stop()

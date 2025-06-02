@@ -185,14 +185,14 @@ class _CollectiveOperation(_NcclOperation):
 
             coll_stream = torch.cuda.ExternalStream(communicator._coll_stream.ptr)
             copy_stream = torch.cuda.ExternalStream(communicator._copy_stream.ptr)
-            copy_to_flatbuf_event = torch.cuda.Event()
+            copy_to_flat_buf_event = torch.cuda.Event()
 
             with torch.cuda.stream(copy_stream):
                 flat_buf = torch.nn.utils.parameters_to_vector(send_buf)
-                copy_to_flatbuf_event.record(copy_stream)
+                copy_to_flat_buf_event.record(copy_stream)
 
             with torch.cuda.stream(coll_stream):
-                coll_stream.wait_event(copy_to_flatbuf_event)
+                coll_stream.wait_event(copy_to_flat_buf_event)
 
             allreduce_event = communicator.allreduce(
                 flat_buf, flat_buf, self._op, get_event=True
