@@ -5,22 +5,10 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
 import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .llama3 import Transformer, LLAMA_1B
 
-from torch.nn.parallel import DistributedDataParallel as DDP
-
-# On Windows platform, the torch.distributed package only
-# supports Gloo backend, FileStore and TcpStore.
-# For FileStore, set init_method parameter in init_process_group
-# to a local file. Example as follow:
-# init_method="file:///f:/libtmp/some_file"
-# dist.init_process_group(
-#    "gloo",
-#    rank=rank,
-#    init_method=init_method,
-#    world_size=world_size)
-# For TcpStore, same way as on Linux.
 
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -96,5 +84,3 @@ if __name__ == "__main__":
     for bucket_size_mb in [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]:
         print(f"Running demo with bucket size: {bucket_size_mb} MB")
         run_demo(demo_basic, 2, bucket_size_mb)
-    
-    # run_demo(demo_basic, 2, 256)

@@ -27,7 +27,6 @@ class Llama3Actor:
         torch.cuda.init()
 
         self.model = Transformer(model_args).to(self.device)
-        # print(self.model)
     
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=1)
@@ -52,17 +51,6 @@ class Llama3Actor:
                 self.num_layers += 1
         
     def forward(self, _) -> None:
-        # x = self.x
-        # for idx, layer in enumerate(self.model):
-        #     pred = layer(x)
-        #     if idx < len(self.model) - 1:
-        #         x = pred.detach().requires_grad_(True)
-        #         self.intermediates[idx] = (pred, x)
-        #     else:
-        #         x = pred
-        #         self.intermediates[idx] = (x, x)
-
-
         x = self.x
 
         _, seqlen = x.shape
@@ -98,35 +86,18 @@ class Llama3Actor:
                 idx += 1
             return x, idx
             
-        # print(forward_and_detach(self.model, x, 0, 0, freq_cis, mask)[0].shape)
         forward_and_detach(self.model, x, 0, 0, freq_cis, mask)
-        # print(f"intermediates: {len(self.intermediates)}, len of model: {self.num_layers}")
-        # for i, val in self.intermediates.items():
-        #     print(f"intermediate {i}: {val[0].shape}, {val[1].shape}")
 
     def backward(self, idx: int, _) -> torch.Tensor:
-        # if idx == len(self.model) - 1:
-        #     loss = self.criterion(self.intermediates[len(self.model) - 1][0], self.y)
-        #     loss.backward()
-        # else:
-        #     pred, pred_detached = self.intermediates[idx]
-        #     grads = pred_detached.grad
-        #     pred.backward(grads)
-        # return self.model[idx].weight.grad
-
-        # print(f"backward idx: {idx}")
-
         layer = self._find_layer(self.model, idx, 0)[0]
 
         if idx == self.num_layers - 1:
-            # print(f"loss between {self.intermediates[self.num_layers - 1][0].shape}, {self.y.shape}")
             loss = self.criterion(self.intermediates[self.num_layers - 1][0], self.y)
             loss.backward()
         else:
             pred, pred_detached = self.intermediates[idx]
             grads = pred_detached.grad
             pred.backward(grads)
-        # print(f"backward idx: {idx}, layer: {layer}")
 
         def gather_grads(block):
             grads = []
@@ -267,25 +238,18 @@ if __name__ == "__main__":
         Llama3Actor.options(num_gpus=1).remote(LLAMA_1B) for _ in range(num_actors)
     ]
 
-    buckets_lst = [
-        [[18], [17], [16], [15], [14], [13], [12], [11], [10], [9], [8], [7], [6], [5], [4], [3], [2], [1], [0]],
-        [[18], [17, 16, 15], [14, 13], [12, 11], [10, 9], [8, 7], [6, 5], [4, 3], [2, 1], [0]],
+    bucketing_schedules = [
+        # [[18], [17], [16], [15], [14], [13], [12], [11], [10], [9], [8], [7], [6], [5], [4], [3], [2], [1], [0]],
+        # [[18], [17, 16, 15], [14, 13], [12, 11], [10, 9], [8, 7], [6, 5], [4, 3], [2, 1], [0]],
         [[18], [17, 16], [15, 14, 13], [12, 11, 10], [9, 8, 7], [6, 5, 4], [3, 2, 1], [0]],
-        [[18], [17, 16, 15, 14, 13], [12, 11, 10, 9], [8, 7, 6, 5], [4, 3, 2, 1], [0]],
-        [[18], [17, 16], [15, 14, 13, 12, 11], [10, 9, 8, 7, 6], [5, 4, 3, 2, 1], [0]],
-        [[18], [17, 16, 15, 14, 13], [12, 11, 10, 9, 8, 7], [6, 5, 4, 3, 2, 1], [0]],
-        [[18], [17, 16, 15], [14, 13, 12, 11, 10, 9, 8], [7, 6, 5, 4, 3, 2, 1], [0]],
-        [[18], [17, 16, 15, 14, 13, 12, 11, 10, 9], [8, 7, 6, 5, 4, 3, 2, 1], [0]],
-        # [[18], [17, 16, 15, 14, 13, 12, 11, 10], [9, 8, 7, 6, 5, 4, 3, 2, 1], [0]],
-        # [[18], [17, 16, 15, 14, 13, 12, 11], [10, 9, 8, 7, 6, 5, 4, 3, 2, 1], [0]],
-        # [[18], [17, 16, 15, 14, 13, 12], [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], [0]],
-        # [[18], [17, 16, 15, 14, 13], [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], [0]],
-        # [[18], [17, 16, 15, 14], [13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], [0]],
-        # [[18], [17, 16, 15], [14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], [0]],
-        # [[18], [17, 16], [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], [0]],
-        [[18], [17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], [0]],
+        # [[18], [17, 16, 15, 14, 13], [12, 11, 10, 9], [8, 7, 6, 5], [4, 3, 2, 1], [0]],
+        # [[18], [17, 16], [15, 14, 13, 12, 11], [10, 9, 8, 7, 6], [5, 4, 3, 2, 1], [0]],
+        # [[18], [17, 16, 15, 14, 13], [12, 11, 10, 9, 8, 7], [6, 5, 4, 3, 2, 1], [0]],
+        # [[18], [17, 16, 15], [14, 13, 12, 11, 10, 9, 8], [7, 6, 5, 4, 3, 2, 1], [0]],
+        # [[18], [17, 16, 15, 14, 13, 12, 11, 10, 9], [8, 7, 6, 5, 4, 3, 2, 1], [0]],
+        # [[18], [17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], [0]],
     ]
 
-    for buckets in buckets_lst:
-        run_ddp(actors, LLAMA_1B, buckets)
+    for bucketing_schedule in bucketing_schedules:
+        run_ddp(actors, LLAMA_1B, bucketing_schedule)
     torch.cuda.profiler.stop()
