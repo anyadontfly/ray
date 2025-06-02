@@ -25,14 +25,14 @@ class Actor:
 
     def compute(self, _):
         res = torch.matmul(self.tensor, self.tensor.T)
-        return res[:1000]
+        return res
     
     def comm(self, _):
         return self.tensor
     
     def end_trace(self, *args):
+        torch.cuda.synchronize()
         torch.cuda.profiler.stop()
-        # torch.cuda.synchronize()
         return 1
     
     def recv_tensor(self, *args):
