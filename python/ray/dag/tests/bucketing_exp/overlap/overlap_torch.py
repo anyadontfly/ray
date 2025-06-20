@@ -4,7 +4,7 @@ import os
 import time
 import argparse
 
-def run_bucket_overlap_exp(num_computes, bucket_size, tensor, profile = True):
+def run_bucket_overlap_exp(num_computes, bucket_size, tensor, res, profile = True):
     
     allreduce_stream = torch.cuda.Stream()
     if profile:
@@ -17,9 +17,8 @@ def run_bucket_overlap_exp(num_computes, bucket_size, tensor, profile = True):
     for _ in range(num_computes // bucket_size):
         comp_lst = []
         for _ in range(bucket_size):
-            res = torch.matmul(tensor, tensor.T)
-            comp_res = res
-            comp_lst.append(comp_res)
+            res = torch.matmul(tensor, res)
+            comp_lst.append(res)
         
         with torch.cuda.stream(allreduce_stream):
             # flatten the buffer
@@ -59,7 +58,8 @@ if __name__ == '__main__':
     WORLD_SIZE = int(os.environ['WORLD_SIZE'])
     WORLD_RANK = int(os.environ['RANK'])
 
-    tensor = torch.randn(1000, 1, device="cuda:%d" % LOCAL_RANK)
+    tensor = torch.randn(1000, 1000, device="cuda:%d" % LOCAL_RANK)
+    res = torch.randn(1000, 1, device="cuda:%d" % LOCAL_RANK)
 
     print('init process group')
     dist.init_process_group(
@@ -70,12 +70,12 @@ if __name__ == '__main__':
     print('Done init process group')
 
     # run warmup 
-    for _ in range(5):
-        run_bucket_overlap_exp(num_computes, bucket_size, tensor, profile=False)
+    for _ in range(1):
+        run_bucket_overlap_exp(num_computes, bucket_size, tensor, res, profile=False)
 
     total_time = 0
     for i in range(iterations):
-        exec_time = run_bucket_overlap_exp(num_computes, bucket_size, tensor)
+        exec_time = run_bucket_overlap_exp(num_computes, bucket_size, tensor, res)
         total_time += exec_time
 
     avg_time = total_time / iterations

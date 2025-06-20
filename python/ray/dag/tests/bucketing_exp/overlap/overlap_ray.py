@@ -14,25 +14,26 @@ parser.add_argument('--iterations', type=int, default=5,
                     help='Number of iterations to run (default: 5)')
 args = parser.parse_args()
 
-torch.cuda.profiler.start()
+# torch.cuda.profiler.start()
 
 @ray.remote(num_gpus=1)
 class Actor:
     def __init__(self):
         self.device = "cuda:0"
-        self.tensor = torch.ones(1000, 1, device=self.device)
-        torch.cuda.profiler.start()
+        self.tensor = torch.ones(1000, 1000, device=self.device)
+        self.res = torch.ones(1000, 1, device=self.device)
+        # torch.cuda.profiler.start()
 
     def compute(self, _):
-        res = torch.matmul(self.tensor, self.tensor.T)
-        return res
+        self.res = torch.matmul(self.tensor, self.res)
+        return self.res
     
     def comm(self, _):
-        return self.tensor
+        return self.res
     
     def end_trace(self, *args):
         torch.cuda.synchronize()
-        torch.cuda.profiler.stop()
+        # torch.cuda.profiler.stop()
         return 1
     
     def recv_tensor(self, *args):
@@ -79,4 +80,4 @@ avg_time = total_time / iterations
 
 print(f"Bucket size: {bucket_size}, Average time: {avg_time:.4f} seconds")
 
-torch.cuda.profiler.stop()
+# torch.cuda.profiler.stop()

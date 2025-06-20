@@ -16,7 +16,7 @@ for size in "${BUCKET_SIZES[@]}"; do
     echo "Running with bucket size: $size"
     
     # Run the Python script with the current bucket size
-    python /home/wyao/ray/python/ray/dag/tests/ddp/overlap.py \
+    python /home/wyao/ray/python/ray/dag/tests/ddp/overlap_torch.py \
         --bucket-size $size \
         --num-computes $NUM_COMPUTES \
         --iterations $ITERATIONS >> $OUTPUT_FILE
