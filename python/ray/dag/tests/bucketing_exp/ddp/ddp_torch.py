@@ -1,10 +1,10 @@
 import os
-import time
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.optim as optim
-import torch.multiprocessing as mp
+
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .llama3 import Transformer, LLAMA_1B
@@ -17,70 +17,47 @@ def setup(rank, world_size):
     # initialize the process group
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
+    torch.set_default_dtype(torch.float16)
+
+
 def cleanup():
     dist.destroy_process_group()
 
-def demo_basic(rank, world_size, bucket_size_mb):
+
+def demo_basic(rank, world_size):
     setup(rank, world_size)
 
-    num_iters = 10
-    time_total = 0
-
-    # Dimensions for the MLP model
-    # model_args = tuple([4096] * 48 + [10])
-
-    # def init_mlp_model(rank, model_args):
-    #     model = []
-    #     for i in range(len(model_args) - 1):
-    #         layer = nn.Linear(model_args[i], model_args[i + 1], bias=False).to(rank)
-    #         model.append(layer)
-    #     return nn.Sequential(*model).to(rank)
-
-    # # create model and move it to GPU with id rank
-    # model = init_mlp_model(rank, model_args)
-    # ddp_model = DDP(model, device_ids=[rank], bucket_cap_mb=bucket_size_mb)
-
-    # x = torch.randn(batch_size, model_args[0]).to(rank)
-    # y = torch.randint(0, 10, (batch_size,)).to(rank)
-
-    ddp_model = DDP(Transformer(LLAMA_1B).to(rank), device_ids=[rank], bucket_cap_mb=bucket_size_mb)
-
-    # Parameters from model args
     batch_size = 2
-    seq_len = 128
-    vocab_size = 128256
 
-    # Random input: batch of token IDs
-    x = torch.randint(0, vocab_size, (batch_size, seq_len)).to(rank)
-
-    # Targets: next-token prediction
-    y = torch.randn(batch_size, seq_len, vocab_size).to(rank)
+    # create model and move it to GPU with id rank
+    model = Transformer(LLAMA_1B).to(rank)
+    ddp_model = DDP(model, device_ids=[rank], bucket_cap_mb=10)
 
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(ddp_model.parameters(), lr=1)
+    optimizer = optim.SGD(ddp_model.parameters(), lr=0.001)
 
-    for _ in range(num_iters):
-        time_start = time.perf_counter()
+    x = torch.randint(0, LLAMA_1B.vocab_size, (batch_size, 128)).to(rank)
+    y = torch.randn(batch_size, 128, LLAMA_1B.vocab_size).to(rank)
+
+    for _ in range(10):
+        # forward pass
         outputs = ddp_model(x, 0)
-        loss_fn(outputs, y).backward()
-        optimizer.step()
-        optimizer.zero_grad()
-        # torch.cuda.synchronize()
-        time_end = time.perf_counter()
-        time_total += (time_end - time_start)
+        loss = loss_fn(outputs, y)
 
-    print(f"Rank {rank}, Average time per iteration: {time_total / num_iters:.4f} seconds")
+        # backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
     cleanup()
 
 
-def run_demo(demo_fn, world_size, bucket_size_mb):
+def run_demo(demo_fn, world_size):
     mp.spawn(demo_fn,
-             args=(world_size, bucket_size_mb),
+             args=(world_size,),
              nprocs=world_size,
              join=True)
-    
+
+
 if __name__ == "__main__":
-    for bucket_size_mb in [16, 32, 64, 128, 256, 512, 1024, 2048, 4096]:
-        print(f"Running demo with bucket size: {bucket_size_mb} MB")
-        run_demo(demo_basic, 2, bucket_size_mb)
+    run_demo(demo_basic, 2)
