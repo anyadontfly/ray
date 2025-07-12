@@ -10,18 +10,20 @@ from ray.dag import InputNode, MultiOutputNode
 from ray.experimental.collective import allreduce
 from ray.air._internal import torch_utils
 
-from .llama3 import Transformer, TransformerBlock, LLAMA_1B
+from llama3 import Transformer, TransformerBlock, LLAMA_1B
 
 
 DEBUG = False
 
 @ray.remote
 class Llama3Actor:
-    def __init__(self, model_args: Any, batch_size: int = 8):
+    def __init__(self, model_args: Any, batch_size: int = 2):
         torch.cuda.profiler.start()
 
         torch.manual_seed(42)
         self.device = torch_utils.get_devices()[0]
+
+        torch.set_default_dtype(torch.bfloat16)
 
         torch.cuda.set_device(self.device)
         torch.cuda.init()
