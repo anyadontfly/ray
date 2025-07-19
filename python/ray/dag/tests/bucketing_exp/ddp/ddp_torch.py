@@ -1,8 +1,11 @@
 import os
+import time
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
+import torch.cuda.nvtx as nvtx
 
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -29,6 +32,11 @@ def demo_basic():
     y = torch.randn(batch_size, seq_len, LLAMA_1B.vocab_size).to(rank)
 
     for _ in range(10):
+        event_start = torch.cuda.Event(enable_timing=True)
+        event_end = torch.cuda.Event(enable_timing=True)
+
+        nvtx.mark("start")
+        event_start.record()
         # forward pass
         outputs = ddp_model(x, 0)
         loss = loss_fn(outputs, y)
@@ -37,6 +45,13 @@ def demo_basic():
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        torch.cuda.synchronize()
+        nvtx.mark("end")
+        event_end.record()
+        if rank == 0:
+            print(f"Time taken for forward and backward: {event_start.elapsed_time(event_end)} ms")
+        time.sleep(0.5)
 
     dist.destroy_process_group()
 

@@ -4,6 +4,7 @@ import time
 
 import torch
 import torch.nn as nn
+import torch.cuda.nvtx as nvtx
 
 import ray
 from ray.dag import InputNode, MultiOutputNode
@@ -51,8 +52,15 @@ class Llama3Actor:
                 self.num_layers += len(submodule)
             else:
                 self.num_layers += 1
+
+        self.event_start = torch.cuda.Event(enable_timing=True)
+        self.event_end = torch.cuda.Event(enable_timing=True)
         
     def forward(self, _) -> None:
+        time.sleep(0.5)
+        nvtx.mark("start")
+        self.event_start.record()
+
         x = self.x
 
         _, seqlen = x.shape
@@ -145,6 +153,9 @@ class Llama3Actor:
             self._print_weights()
 
         torch.cuda.synchronize()
+        nvtx.mark("end")
+        self.event_end.record()
+        print(f"Time taken for forward and backward: {self.event_start.elapsed_time(self.event_end)} ms")
         torch.cuda.profiler.stop()
 
     def _find_layer(self, module, target_idx, idx):
@@ -187,7 +198,7 @@ def generate_buckets(bucket_size: int, model_args: Any) -> List[List[int]]:
 def run_ddp(actors: Any, Any, buckets):
     
     num_iters = 10
-    time_total = 0
+    # time_total = 0
 
     with InputNode() as inp:
         # Forward pass
@@ -224,11 +235,11 @@ def run_ddp(actors: Any, Any, buckets):
     ray.get(compiled_dag.execute(None))
 
     for _ in range(num_iters):
-        start_time = time.perf_counter()
+        # start_time = time.perf_counter()
         ray.get(compiled_dag.execute(None))
-        end_time = time.perf_counter()
-        time_total += (end_time - start_time)
-    print(f"Average time per iteration: {time_total / num_iters:.4f} seconds\n")
+        # end_time = time.perf_counter()
+        # time_total += (end_time - start_time)
+    # print(f"Average time per iteration: {time_total / num_iters:.4f} seconds\n")
 
 
 if __name__ == "__main__":
