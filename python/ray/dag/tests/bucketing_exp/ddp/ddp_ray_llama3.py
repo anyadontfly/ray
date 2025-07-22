@@ -208,6 +208,7 @@ def run_ddp(actors: Any, Any, buckets):
         # Gather update node to avoit leaf nodes
         update_res_lst_0 = []
         update_res_lst_1 = []
+        ar_res_list = []
         for bucket in buckets:
             # Gather backward grads for allreduce
             backward_res_lst_0 = []
@@ -217,6 +218,9 @@ def run_ddp(actors: Any, Any, buckets):
                 backward_res_lst_0.append(backward_res[0])
                 backward_res_lst_1.append(backward_res[1])
             ar_res = allreduce.bind([backward_res_lst_0, backward_res_lst_1])
+            ar_res_list.append(ar_res)
+        
+        for bucket, ar_res in zip(buckets, ar_res_list):
             # Apply grads to the model
             apply_grads_res = [
                 actor.apply_grads.bind(bucket, *grads)
