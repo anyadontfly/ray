@@ -18,6 +18,7 @@ def demo_basic():
     torch.distributed.init_process_group(backend="nccl", device_id=device)
     torch.set_default_dtype(torch.bfloat16)
 
+    num_iters = 10
     batch_size = 2
     seq_len = 128
 
@@ -31,7 +32,7 @@ def demo_basic():
     x = torch.randint(0, LLAMA_1B.vocab_size, (batch_size, seq_len)).to(rank)
     y = torch.randn(batch_size, seq_len, LLAMA_1B.vocab_size).to(rank)
 
-    for _ in range(10):
+    for _ in range(num_iters):
         event_start = torch.cuda.Event(enable_timing=True)
         event_end = torch.cuda.Event(enable_timing=True)
 
@@ -46,11 +47,12 @@ def demo_basic():
         loss.backward()
         optimizer.step()
 
-        torch.cuda.synchronize()
         nvtx.mark("end")
         event_end.record()
+        event_end.synchronize()
+        elapsed_time = event_start.elapsed_time(event_end)
         if rank == 0:
-            print(f"Time taken for forward and backward: {event_start.elapsed_time(event_end)} ms")
+            print(f"Time taken for forward and backward: {elapsed_time} ms")
         time.sleep(0.5)
 
     dist.destroy_process_group()

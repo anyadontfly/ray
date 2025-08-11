@@ -152,9 +152,9 @@ class Llama3Actor:
         if DEBUG:
             self._print_weights()
 
-        torch.cuda.synchronize()
         nvtx.mark("end")
         self.event_end.record()
+        self.event_end.synchronize()
         print(f"Time taken for forward and backward: {self.event_start.elapsed_time(self.event_end)} ms")
         torch.cuda.profiler.stop()
 
